@@ -1,0 +1,10 @@
+.gradle
+.idea
+.cxx
+build
+local.properties
+Cargo.lock
+.build
+.build-*
+.gradle-home
+.gradle-*.log

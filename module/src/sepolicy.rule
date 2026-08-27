@@ -1,0 +1,32 @@
+type magisk_file file_type
+typeattribute magisk_file mlstrustedobject
+allow * magisk_file file *
+allow * magisk_file dir *
+allow * magisk_file fifo_file *
+allow * magisk_file chr_file *
+allow * magisk_file lnk_file *
+allow * magisk_file sock_file *
+
+allow * adb_data_file dir open
+allow * adb_data_file dir read
+allow * adb_data_file dir search
+allow * adb_data_file dir getattr
+allow * adb_data_file file open
+allow * adb_data_file file read
+allow * adb_data_file file getattr
+allow * adb_data_file file map
+allow * adb_data_file lnk_file read
+allow * adb_data_file lnk_file getattr
+
+allow * unlabeled file open
+allow * unlabeled file read
+allow * unlabeled file write
+allow * unlabeled file getattr
+allow * unlabeled file map
+allow * unlabeled file execute
+allow * tmpfs file open
+allow * tmpfs file read
+allow * tmpfs file write
+allow * tmpfs file getattr
+allow * tmpfs file map
+allow * tmpfs file execute
