@@ -1165,7 +1165,6 @@ void handleExec(pid_t pid, Tracee& t) {
     t.arch = archFromElf(eh);
     if (t.arch == Arch::kUnknown) {
         LOGW("skipping %s (pid %d): unsupported machine %u", exe.c_str(), pid, eh.machine);
-        recordFailure(pid, exe, "unsupported ELF machine");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         g_tracees.erase(pid);
         return;
@@ -1570,7 +1569,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     Arch arch = archFromElf(eh);
     if (arch == Arch::kUnknown) {
         LOGW("skipping %s (pid %d): unsupported machine %u", exe.c_str(), pid, eh.machine);
-        recordFailure(pid, exe, "unsupported ELF machine");
         return SeizeResult::kGiveUp;
     }
 
@@ -1649,7 +1647,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     if (pcInExeText(pid, exe, pc)) {
         LOGW("%s (pid %d) already past entry (pc %p); instance missed", exe.c_str(), pid,
              reinterpret_cast<void*>(pc));
-        recordFailure(pid, exe, "missed (already past entry)");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         return SeizeResult::kGiveUp;
     }
@@ -1788,7 +1785,6 @@ void expirePending() {
         if (t.state == STATE_ENTRY && t.deadline_ms != 0 && now >= t.deadline_ms) {
             const pid_t pid = it->first;
             LOGW("entry breakpoint for pid %d never hit (already past entry?), detaching", pid);
-            recordFailure(pid, t.exe, "entry breakpoint never hit");
             restoreEntry(pid, t);
             ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
             g_done.insert(pid);
