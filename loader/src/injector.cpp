@@ -1488,10 +1488,16 @@ void handleTrap(pid_t pid, Tracee& t) {
         LOGE("dlopen(%s) failed for pid %d: %s", t.loader.c_str(), pid, err.c_str());
         recordFailure(pid, t.exe, "dlopen failed: " + err);
         if (err.find("Permission denied") != std::string::npos) {
-            LOGE("hint for pid %d: the memfd is labeled \"tmpfs\" (GKI) or \"unlabeled\" "
-                 "(other kernels) and the target domain cannot access it - make sure "
-                 "sepolicy.rule is applied (allow * tmpfs/unlabeled file open read "
-                 "getattr map execute)", pid);
+            // The target created the memfd itself, so the kernel labels it with
+            // the target domain's own tmpfs type on many devices (e.g. artd ->
+            // "artd_tmpfs"), not plain "tmpfs"/"unlabeled". dlopen() maps it
+            // PROT_EXEC, which needs `execute` on that exact label; most
+            // domains lack it on their own *_tmpfs type.
+            LOGE("hint for pid %d: dlopen needs the `execute` permission on the "
+                 "memfd's SELinux label (\"tmpfs\", \"unlabeled\", or the target's "
+                 "own <domain>_tmpfs, e.g. artd_tmpfs). Make sure the module "
+                 "sepolicy.rule is applied; Zygisk Next Next ships "
+                 "`allow * * file execute` to cover every label.", pid);
         } else if (err.find("not accessible") != std::string::npos) {
             LOGE("hint for pid %d: the linker rejected the library path for its "
                  "namespace (loading must go through a tmpfs memfd)", pid);
@@ -1603,13 +1609,27 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     }
 
     uintptr_t base = 0;
+    bool has_loader = false;
     for (const auto& m : parseMaps(std::to_string(pid))) {
         if (m.offset == 0 && m.path == exe) {
             base = m.start;
-            break;
+        }
+        // A fork of an already-injected process (e.g. a module companion
+        // child, or any child spawned by a target after injection) inherits
+        // the loader mappings and is already past its own entry, so there is
+        // nothing to inject: an entry breakpoint would never fire. Skip it
+        // instead of wasting the 3s STATE_ENTRY timeout.
+        if (m.path.find("libloader.so") != std::string::npos ||
+            m.path.find("memfd:loader") != std::string::npos) {
+            has_loader = true;
         }
     }
     if (!base) {
+        return SeizeResult::kGiveUp;
+    }
+    if (has_loader) {
+        LOGW("%s (pid %d) already carries the ZNN loader (fork of an injected "
+             "process); skipping", exe.c_str(), pid);
         return SeizeResult::kGiveUp;
     }
     bool thumb = false;
@@ -1966,7 +1986,8 @@ int main(int argc, char** argv) {
 
     // Diagnostics: are the loaders present and what labels do they carry?
     // (The label decides which SELinux rules the target needs for its own
-    // module reads; the memfd injection itself only needs the "unlabeled" rule.)
+    // module reads; the memfd dlopen itself needs `execute` on the memfd's
+    // label — see the `allow * * file execute` rule in module/src/sepolicy.rule.)
     for (const char* p : {g_loader64.c_str(), g_loader32.c_str()}) {
         char ctx[256];
         ssize_t n = lgetxattr(p, "security.selinux", ctx, sizeof(ctx) - 1);
