@@ -5,12 +5,17 @@ export function isKsuAvailable(): boolean {
   return typeof (window as unknown as { ksu?: unknown }).ksu !== 'undefined';
 }
 
-export async function execJson<T>(command: string): Promise<T> {
-  const { errno, stdout, stderr } = await exec(command);
-  if (errno !== 0) {
-    throw new Error(`command failed (errno ${errno}): ${command}\n${stderr}`);
+export async function execJson<T>(command: string, timeoutMs = 5000): Promise<T> {
+  const result = await Promise.race([
+    exec(command),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`command timed out: ${command}`)), timeoutMs),
+    ),
+  ]);
+  if (result.errno !== 0) {
+    throw new Error(`command failed (errno ${result.errno}): ${command}\n${result.stderr}`);
   }
-  return JSON.parse(stdout.trim()) as T;
+  return JSON.parse(result.stdout.trim()) as T;
 }
 
 export function getModuleDir(): string {

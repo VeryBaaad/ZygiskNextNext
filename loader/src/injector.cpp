@@ -128,8 +128,11 @@ std::string g_module_dir;
 
 // State snapshot write bookkeeping: the snapshot is (re)written on demand or
 // on the periodic rescan, throttled so a burst of injection events does not
-// spam the disk.
+// spam the disk. `g_last_state_json` is the last successfully persisted
+// content: an unchanged snapshot is never rewritten, so an idle daemon (no
+// injections, no module changes) performs zero disk writes.
 bool g_state_dirty = false;
+std::string g_last_state_json;
 
 // 0 = classic (trace init), 1 = compat (poll /proc). Chosen automatically in
 // main(): classic unless a Zygisk implementation is running or init is already
@@ -305,19 +308,38 @@ bool moduleMatchesExe(const ModuleInfo& m, const std::string& exe) {
 // Called from the STATE_INIT completion path, before detaching.
 void recordSuccess(pid_t pid, const std::string& exe) {
     const std::string name = procName(pid, exe);
+    bool changed = false;
     for (auto& kv : g_modules) {
-        if (moduleMatchesExe(kv.second, exe)) kv.second.processes.emplace_back(pid, name);
+        if (moduleMatchesExe(kv.second, exe)) {
+            kv.second.processes.emplace_back(pid, name);
+            changed = true;
+        }
     }
-    g_state_dirty = true;
+    if (changed) g_state_dirty = true;
 }
 
 // Record an injection failure/miss for every module that targets this process.
+// Repeated identical failures (same process name + same reason) are collapsed
+// into a single entry: they carry no new information, and appending them would
+// grow the list and force a snapshot rewrite on every occurrence (e.g. a
+// process that keeps failing to start would otherwise grind the flash).
 void recordFailure(pid_t pid, const std::string& exe, const std::string& reason) {
     const std::string name = procName(pid, exe);
+    bool changed = false;
     for (auto& kv : g_modules) {
-        if (moduleMatchesExe(kv.second, exe)) kv.second.failed.emplace_back(name, reason);
+        if (!moduleMatchesExe(kv.second, exe)) continue;
+        bool dup = false;
+        for (const auto& f : kv.second.failed) {
+            if (f.first == name && f.second == reason) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+        kv.second.failed.emplace_back(name, reason);
+        changed = true;
     }
-    g_state_dirty = true;
+    if (changed) g_state_dirty = true;
 }
 
 // Collect the (static) system info once at startup. This mirrors what the old
@@ -405,9 +427,16 @@ std::string buildStateJson() {
     return out;
 }
 
+// Atomically persist the snapshot (tmp file + rename), so a reader never
+// observes a torn write. The daemon runs as root; /data/adb/zygisksu follows
+// the original Zygisk Next runtime-directory convention. If the content is
+// identical to the last persisted snapshot, nothing touches the disk — this is
+// what keeps an idle daemon from grinding the flash with periodic rewrites.
 void writeStateSnapshot() {
-    mkdir(kStateDir, 0755);
     const std::string json = buildStateJson();
+    if (json == g_last_state_json) return;
+
+    mkdir(kStateDir, 0755);
 
     int fd = open(kStateTmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) return;
@@ -423,7 +452,9 @@ void writeStateSnapshot() {
         unlink(kStateTmp);
         return;
     }
-    rename(kStateTmp, kStateFile);
+    if (rename(kStateTmp, kStateFile) == 0) {
+        g_last_state_json = json;
+    }
 }
 
 // Extract a balanced {…} or […] JSON value located after `marker`.
@@ -529,7 +560,12 @@ int ctlMain(const char* cmd) {
         pid_t pid = 0;
         std::string spid, zmode;
         if (extractScalar(state, "pid", &spid)) pid = static_cast<pid_t>(strtol(spid.c_str(), nullptr, 10));
-        extractScalar(state, "mode", &zmode);
+        if (extractScalar(state, "mode", &zmode) && zmode.size() >= 2 &&
+            zmode.front() == '"' && zmode.back() == '"') {
+            // extractScalar returns the raw JSON token including the quotes;
+            // strip them so the field is emitted as a single-quoted string.
+            zmode = zmode.substr(1, zmode.size() - 2);
+        }
         const bool alive = isInjectorAlive(pid);
         // The snapshot can be stale (daemon restarted); fall back to /proc.
         if (!alive) {
@@ -2031,11 +2067,13 @@ int main(int argc, char** argv) {
         }
 
         // Persist the WebUI snapshot: immediately after a rescan or when events
-        // (injection success/failure) dirtied it, throttled to ~1/s so a burst
-        // of events does not spam the disk. The 5s rescan above also forces a
-        // write even without events (mode/pid changes, process deaths).
+        // (injection success/failure) dirtied it, throttled to ~1 write per 2s
+        // so a burst of injection events coalesces into a single rewrite. The
+        // content comparison inside writeStateSnapshot() additionally skips the
+        // disk entirely when nothing actually changed — deduplicated failures
+        // and an idle daemon therefore produce zero writes.
         const uint64_t now = nowMs();
-        if (g_state_dirty && (now - last_state_write_ms >= 1000 || last_state_write_ms == 0)) {
+        if (g_state_dirty && (now - last_state_write_ms >= 2000 || last_state_write_ms == 0)) {
             writeStateSnapshot();
             g_state_dirty = false;
             last_state_write_ms = now;

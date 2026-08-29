@@ -50,9 +50,18 @@ let cards: CardData = { status: null, system: null, modules: null };
 async function load(): Promise<void> {
   if (!isKsuAvailable()) return;
   const [status, system, modules] = await Promise.all([
-    getInjectorStatus().catch(() => null),
-    getSystemInfo().catch(() => null),
-    getModules().catch(() => null),
+    getInjectorStatus().catch((e) => {
+      console.warn('[znn] status:', e);
+      return null;
+    }),
+    getSystemInfo().catch((e) => {
+      console.warn('[znn] system:', e);
+      return null;
+    }),
+    getModules().catch((e) => {
+      console.warn('[znn] modules:', e);
+      return null;
+    }),
   ]);
   cards = { status, system, modules };
   render();
