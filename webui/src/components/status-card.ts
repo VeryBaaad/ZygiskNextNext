@@ -28,7 +28,7 @@ export class StatusCard extends HTMLElement {
       <div class="md-card status-card">
         <md-elevation></md-elevation>
         <div class="card-body status-row">
-          <md-icon class="status-icon ${active ? 'is-active' : 'is-failed'}">
+          <md-icon class="status-icon ${active ? 'is-active' : 'is-failed'}" style="font-size: 18px;">
             ${active ? 'check_circle' : 'warning'}
           </md-icon>
           <div class="status-text">
