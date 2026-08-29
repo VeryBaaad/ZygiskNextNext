@@ -46,6 +46,17 @@ Look this: [hyos_runtime.md](https://github.com/Dr-TSNG/ZygiskNext/blob/main/doc
 
 Notice: These community groups don't accept any bug report, please use [Get help](#get-help) to report.
 
+## WebUI
+
+The module ships a WebUI (`:webui` Gradle subproject, built into `module/webroot/`)
+using [@material/web](https://www.npmjs.com/package/@material/web) and the
+[kernelsu](https://www.npmjs.com/package/kernelsu) WebUI library. It shows the
+injector status, device/root info and per-module injected processes, supports
+i18n (defaults to the system language) and dark mode.
+
+Build it on its own with `./gradlew :webui:buildWebui`; the module zip build
+(`:module:zipRelease` / `:module:zipDebug`) builds it automatically.
+
 ## Translation Contributing
 
 There is no need for translation here for the time being.

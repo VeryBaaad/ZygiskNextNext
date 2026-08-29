@@ -97,6 +97,11 @@ extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'loader-ctl.sh'   "$MODPATH"
 mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
+ui_print "- Extracting webroot"
+for f in $(unzip -Z1 "$ZIPFILE" 'webroot/*' | grep -Ev '/$|\.sha256$'); do
+  extract "$ZIPFILE" "$f" "$MODPATH"
+done
+
 mkdir "$MODPATH/bin"
 mkdir "$MODPATH/lib"
 mkdir "$MODPATH/lib64"

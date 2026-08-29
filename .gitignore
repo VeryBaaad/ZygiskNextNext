@@ -8,3 +8,9 @@ Cargo.lock
 .build-*
 .gradle-home
 .gradle-*.log
+
+# WebUI
+webui/node_modules/
+webui/.npm-cache/
+module/webroot/
+.tmp-ksu/
