@@ -1146,7 +1146,6 @@ void handleExec(pid_t pid, Tracee& t) {
 
     int fd = open(("/proc/" + std::to_string(pid) + "/exe").c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        recordFailure(pid, exe, "cannot open /proc/pid/exe");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         g_tracees.erase(pid);
         return;
@@ -1156,7 +1155,6 @@ void handleExec(pid_t pid, Tracee& t) {
     close(fd);
     ElfHdrInfo eh;
     if (r < 52 || !readElfHdr(hdr, static_cast<size_t>(r), &eh)) {
-        recordFailure(pid, exe, "cannot read ELF header");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         g_tracees.erase(pid);
         return;
@@ -1188,7 +1186,6 @@ void handleExec(pid_t pid, Tracee& t) {
     }
     entry = (eh.type == ET_DYN) ? base + entry : entry;
     if (!entry) {
-        recordFailure(pid, exe, "no entry point");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         g_tracees.erase(pid);
         return;
@@ -1198,7 +1195,6 @@ void handleExec(pid_t pid, Tracee& t) {
     t.loader = eh.is64 ? g_loader64 : g_loader32;
     t.state = STATE_ENTRY;
     if (!setEntryBreakpoint(pid, &t, thumb)) {
-        recordFailure(pid, exe, "cannot set entry breakpoint");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         g_tracees.erase(pid);
         return;
@@ -1554,7 +1550,6 @@ enum class SeizeResult { kSeized, kRetry, kGiveUp };
 SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     int fd = open(("/proc/" + std::to_string(pid) + "/exe").c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        recordFailure(pid, exe, "cannot open /proc/pid/exe");
         return SeizeResult::kGiveUp;
     }
     uint8_t hdr[64] = {0};
@@ -1562,7 +1557,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     close(fd);
     ElfHdrInfo eh;
     if (r < 52 || !readElfHdr(hdr, static_cast<size_t>(r), &eh)) {
-        recordFailure(pid, exe, "cannot read ELF header");
         return SeizeResult::kGiveUp;
     }
 
@@ -1580,7 +1574,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
         }
     }
     if (!base) {
-        recordFailure(pid, exe, "executable not mapped");
         return SeizeResult::kGiveUp;
     }
     bool thumb = false;
@@ -1591,18 +1584,15 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     }
     entry = (eh.type == ET_DYN) ? base + entry : entry;
     if (!entry) {
-        recordFailure(pid, exe, "no entry point");
         return SeizeResult::kGiveUp;
     }
 
     if (ptrace(PTRACE_SEIZE, pid, nullptr, nullptr) != 0) {
         if (errno == EPERM || errno == EACCES) return SeizeResult::kRetry;
-        recordFailure(pid, exe, "cannot seize");
         return SeizeResult::kGiveUp;
     }
 
     if (ptrace(PTRACE_INTERRUPT, pid, nullptr, nullptr) != 0) {
-        recordFailure(pid, exe, "interrupt failed");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         return SeizeResult::kGiveUp;
     }
@@ -1616,7 +1606,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
             pid_t w = waitpid(pid, &status, __WALL | WNOHANG);
             if (w == pid) break;
             if (w < 0 || nowMs() >= stop_deadline) {
-                recordFailure(pid, exe, "interrupt wait timed out");
                 ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
                 return SeizeResult::kGiveUp;
             }
@@ -1624,7 +1613,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
         }
     }
     if (WIFEXITED(status) || WIFSIGNALED(status)) {
-        recordFailure(pid, exe, "process exited during seize");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         return SeizeResult::kGiveUp;
     }
@@ -1637,7 +1625,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     Regs regs;
     regs.arch = arch;
     if (!getRegs(pid, &regs)) {
-        recordFailure(pid, exe, "cannot read registers");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         return SeizeResult::kGiveUp;
     }
@@ -1660,7 +1647,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     t.exe = exe;
     t.deadline_ms = nowMs() + 3000;  // the linker must reach the entry soon
     if (!setEntryBreakpoint(pid, &t, thumb)) {
-        recordFailure(pid, exe, "cannot set entry breakpoint");
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
         return SeizeResult::kGiveUp;
     }
@@ -1734,7 +1720,6 @@ void pollProcesses() {
                 if (nowMs() - it->second.target_since_ms > 5000) {
                     // Held by another tracer for too long — the process must be
                     // running its main() by now; stop retrying.
-                    recordFailure(pid, exe, "held by another tracer for too long");
                     g_done.insert(pid);
                     g_candidates.erase(it);
                 } else {
