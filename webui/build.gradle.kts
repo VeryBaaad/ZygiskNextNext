@@ -29,7 +29,6 @@ val buildWebui = tasks.register<Exec>("buildWebui") {
     inputs.file("tsconfig.json")
     inputs.file("vite.config.ts")
     inputs.dir("src")
-    inputs.dir("public")
     outputs.dir(webrootDir)
     workingDir(projectDir)
     environment("ZNN_MODULE_ID", moduleId)
