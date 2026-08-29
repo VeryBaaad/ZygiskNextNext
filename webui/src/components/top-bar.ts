@@ -3,7 +3,7 @@ import '@material/web/iconbutton/icon-button.js';
 import '@material/web/menu/menu.js';
 import '@material/web/menu/menu-item.js';
 
-import { MODULE_ID } from '../app-info';
+import { MODULE_ID, MODULE_NAME } from '../app-info';
 import { getLocale, LOCALE_LABELS, onLocaleChange, setLocale, t, type Locale } from '../i18n';
 import { cycleTheme, getThemeMode, type ThemeMode } from '../theme';
 
@@ -30,7 +30,7 @@ export class TopBar extends HTMLElement {
     const locale = getLocale();
     this.innerHTML = `
       <header class="top-bar">
-        <span class="top-bar-title" title="${MODULE_ID}">${MODULE_ID}</span>
+        <span class="top-bar-title" title="${MODULE_ID}">${MODULE_NAME}</span>
         <div class="top-bar-actions">
           <md-icon-button id="theme-btn" aria-label="${t('topbar.themeLabel')}">
             <md-icon>${THEME_ICONS[getThemeMode()]}</md-icon>
