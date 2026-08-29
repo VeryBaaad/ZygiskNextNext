@@ -9,7 +9,7 @@ import '@material/web/iconbutton/icon-button.js';
 import '@material/web/menu/menu.js';
 import '@material/web/menu/menu-item.js';
 
-import { enableEdgeToEdge } from 'kernelsu';
+import { enableEdgeToEdge, fullScreen } from 'kernelsu';
 
 import { MODULE_NAME, VER_NAME } from './app-info';
 import { getInjectorStatus, type InjectorStatus } from './api/injector';
@@ -35,6 +35,7 @@ initTheme();
 if (isKsuAvailable()) {
   try {
     enableEdgeToEdge(true);
+    fullScreen(true);
   } catch {
   }
 }
