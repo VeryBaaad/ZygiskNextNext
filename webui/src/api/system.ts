@@ -1,4 +1,4 @@
-import { apiScript, execJson } from './ksu';
+import { apiBinary, execJson } from './ksu';
 
 export interface RootImplementation {
   magisk: string | null;
@@ -15,7 +15,7 @@ export interface SystemInfo {
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
-  return execJson<SystemInfo>(`sh '${apiScript()}' system`);
+  return execJson<SystemInfo>(`'${apiBinary()}' --ctl system`);
 }
 
 export function cleanVersion(raw: string | null): string | null {

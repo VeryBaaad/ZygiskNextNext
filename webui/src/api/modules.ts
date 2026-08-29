@@ -1,8 +1,13 @@
-import { apiScript, execJson } from './ksu';
+import { apiBinary, execJson } from './ksu';
 
 export interface InjectedProcess {
   pid: number;
   name: string;
+}
+
+export interface FailedProcess {
+  name: string;
+  reason: string;
 }
 
 export interface ZnnModule {
@@ -10,8 +15,9 @@ export interface ZnnModule {
   name: string;
   version: string;
   processes: InjectedProcess[];
+  failed?: FailedProcess[];
 }
 
 export async function getModules(): Promise<ZnnModule[]> {
-  return execJson<ZnnModule[]>(`sh '${apiScript()}' modules`);
+  return execJson<ZnnModule[]>(`'${apiBinary()}' --ctl modules`);
 }

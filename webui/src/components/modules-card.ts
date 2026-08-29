@@ -28,6 +28,7 @@ export class ModulesCard extends HTMLElement {
   private renderModule(m: ZnnModule): string {
     const isOpen = this.expanded.has(m.id);
     const procs = m.processes;
+    const failed = m.failed ?? [];
     const label = `${m.name} (${m.id})`;
     return `
       <div class="module-row">
@@ -35,6 +36,9 @@ export class ModulesCard extends HTMLElement {
         <div class="module-pill" data-id="${escapeHtml(m.id)}" role="button" tabindex="0"
              aria-expanded="${isOpen ? 'true' : 'false'}">
           <span class="module-count">${t('modules.processes', { n: procs.length })}</span>
+          ${failed.length > 0
+            ? `<span class="module-failed-count">${t('modules.failed', { n: failed.length })}</span>`
+            : ''}
           <md-icon-button class="module-expand"
                           aria-label="${isOpen ? t('modules.collapse') : t('modules.expand')}">
             <md-icon>${isOpen ? 'expand_less' : 'expand_more'}</md-icon>
@@ -53,6 +57,20 @@ export class ModulesCard extends HTMLElement {
           </div>`,
               )
               .join('')}
+        ${failed.length === 0
+          ? ''
+          : `<div class="proc-failed">
+               <div class="proc-failed-title">${t('modules.failedTitle')}</div>
+               ${failed
+                 .map(
+                   (f) => `
+               <div class="proc-row proc-failed-row">
+                 <span class="proc-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+                 <span class="proc-failed-reason" title="${escapeHtml(f.reason)}">${escapeHtml(f.reason)}</span>
+               </div>`,
+                 )
+                 .join('')}
+             </div>`}
       </div>`;
   }
 

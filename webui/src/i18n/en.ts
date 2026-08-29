@@ -15,6 +15,8 @@ export const en: Record<string, string> = {
 
   'modules.title': 'Modules',
   'modules.processes': '{n} processes',
+  'modules.failed': '{n} failed',
+  'modules.failedTitle': 'Injection failures',
   'modules.noModules': 'No modules',
   'modules.expand': 'Expand',
   'modules.collapse': 'Collapse',
