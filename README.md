@@ -48,7 +48,7 @@ Notice: These community groups don't accept any bug report, please use [Get help
 
 ## Translation Contributing
 
-There is no need for translation here for the time being.
+Create a Pull Request.
 
 ## Credits 
 

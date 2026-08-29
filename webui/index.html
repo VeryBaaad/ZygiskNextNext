@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Zygisk Next Next</title>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('znn_theme');
+          var dark =
+            saved === 'dark' ||
+            (saved !== 'light' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        } catch (e) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <znn-top-bar></znn-top-bar>
+    <main id="content" class="content"></main>
+    <znn-footer></znn-footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

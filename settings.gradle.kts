@@ -20,4 +20,5 @@ rootProject.name = "ZygiskNextNext"
 include(
     ":loader",
     ":module",
+    ":webui",
 )

@@ -11,12 +11,21 @@ allow * adb_data_file dir open
 allow * adb_data_file dir read
 allow * adb_data_file dir search
 allow * adb_data_file dir getattr
+allow * adb_data_file dir write
+allow * adb_data_file dir add_name
+allow * adb_data_file dir create
+allow * adb_data_file dir rename
 allow * adb_data_file file open
 allow * adb_data_file file read
 allow * adb_data_file file getattr
 allow * adb_data_file file map
+allow * adb_data_file file write
+allow * adb_data_file file create
+allow * adb_data_file file rename
+allow * adb_data_file file setattr
 allow * adb_data_file lnk_file read
 allow * adb_data_file lnk_file getattr
+allow * adb_data_file lnk_file create
 
 allow * unlabeled file open
 allow * unlabeled file read

@@ -1,0 +1,22 @@
+{
+  "name": "zygisknextnext-webui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Zygisk Next Next module WebUI (KernelSU / Magisk / APatch)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@material-symbols/font-400": "^0.47.0",
+    "@material/web": "^2.5.0",
+    "kernelsu": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^5.6.0",
+    "vite": "^7.0.0"
+  }
+}

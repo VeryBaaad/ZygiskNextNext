@@ -34,9 +34,11 @@
 #include <sys/ptrace.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
 #include <sys/xattr.h>
+#include <sys/system_properties.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -80,10 +82,57 @@ struct Target {
     std::string value;
 };
 
+// One enabled ZN module declaration, plus the runtime results the WebUI
+// reports. The definition part (id/name/version/targets) is rebuilt on every
+// rescan; the runtime results (processes/failed) survive rescans because they
+// are carried over by module id.
+struct ModuleInfo {
+    std::string id;
+    std::string name;
+    std::string version;
+    std::vector<Target> targets;
+
+    // Successfully injected processes (pid, process name). The count is the
+    // number of real injections; entries are never pruned (a dead process is
+    // simply left in the list).
+    std::vector<std::pair<int, std::string>> processes;
+    // Injection failures / misses (process name, short reason).
+    std::vector<std::pair<std::string, std::string>> failed;
+};
+
+constexpr const char* kStateDir = "/data/adb/zygisknextsu";
+constexpr const char* kStateFile = "/data/adb/zygisknextsu/znn_state.json";
+constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
+
+// Root implementation versions, collected once at startup.
+struct RootImplInfo {
+    std::string kernel_su;
+    std::string magisk;
+    std::string apatch;
+};
+
+struct SystemInfo {
+    std::string kernel;
+    int sdk = 0;
+    std::string abi;
+    std::string abilist;
+    RootImplInfo root;
+};
+
 std::vector<Target> g_targets;
+std::map<std::string, ModuleInfo> g_modules;  // module id -> definition + results
+SystemInfo g_system;
 std::string g_loader64;  // 64-bit libloader.so
 std::string g_loader32;  // 32-bit libloader.so
 std::string g_module_dir;
+
+// State snapshot write bookkeeping: the snapshot is (re)written on demand or
+// on the periodic rescan, throttled so a burst of injection events does not
+// spam the disk. `g_last_state_json` is the last successfully persisted
+// content: an unchanged snapshot is never rewritten, so an idle daemon (no
+// injections, no module changes) performs zero disk writes.
+bool g_state_dirty = false;
+std::string g_last_state_json;
 
 // 0 = classic (trace init), 1 = compat (poll /proc). Chosen automatically in
 // main(): classic unless a Zygisk implementation is running or init is already
@@ -93,8 +142,13 @@ int g_mode = 0;
 volatile sig_atomic_t g_rescan = 0;
 void on_sighup(int) { g_rescan = 1; }
 
+void collectTargets();  // defined below (uses readPropValue)
+
+std::string readPropValue(const std::string& moddir, const char* key);
+
 void collectTargets() {
-    std::vector<Target> targets;
+    std::map<std::string, ModuleInfo> next;
+
     DIR* d = opendir("/data/adb/modules");
     if (!d) return;
     struct dirent* de;
@@ -107,6 +161,12 @@ void collectTargets() {
         std::string file = dir + "/zn_modules.txt";
         FILE* f = fopen(file.c_str(), "re");
         if (!f) continue;
+
+        ModuleInfo mi;
+        mi.id = de->d_name;
+        mi.name = readPropValue(dir, "name");
+        if (mi.name.empty()) mi.name = mi.id;
+        mi.version = readPropValue(dir, "version");
 
         char* line = nullptr;
         size_t cap = 0;
@@ -133,18 +193,418 @@ void collectTargets() {
             } else {
                 continue;
             }
-            targets.push_back(std::move(t));
+            mi.targets.push_back(std::move(t));
         }
         free(line);
         fclose(f);
+
+        if (mi.targets.empty()) continue;
+
+        // Carry the runtime results of the previous snapshot of this module
+        // over to the rebuilt definition (they are keyed by module id).
+        auto prev = g_modules.find(mi.id);
+        if (prev != g_modules.end()) {
+            mi.processes = std::move(prev->second.processes);
+            mi.failed = std::move(prev->second.failed);
+        }
+        next[mi.id] = std::move(mi);
     }
     closedir(d);
+    g_modules = std::move(next);
 
+    // Flat target list for injection matching (deduplicated).
     std::set<std::pair<bool, std::string>> seen;
-    for (auto& t : targets) seen.insert({t.is_name, t.value});
-    targets.clear();
-    for (auto& s : seen) targets.push_back({s.first, s.second});
+    std::vector<Target> targets;
+    for (const auto& kv : g_modules) {
+        for (const auto& t : kv.second.targets) {
+            if (seen.insert({t.is_name, t.value}).second) targets.push_back(t);
+        }
+    }
     g_targets = std::move(targets);
+}
+
+// Read the first `key=value` line from a module's module.prop.
+std::string readPropValue(const std::string& moddir, const char* key) {
+    std::string file = moddir + "/module.prop";
+    FILE* f = fopen(file.c_str(), "re");
+    if (!f) return {};
+    char* line = nullptr;
+    size_t cap = 0;
+    std::string out;
+    const size_t klen = strlen(key);
+    while (getline(&line, &cap, f) > 0) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (l.size() > klen && l.rfind(key, 0) == 0 && l[klen] == '=') {
+            out = l.substr(klen + 1);
+            break;
+        }
+    }
+    free(line);
+    fclose(f);
+    return out;
+}
+
+// WebUI state snapshot
+// ====================
+
+std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+// Best-effort display name of a process: /proc/<pid>/cmdline first token,
+// falling back to the executable basename.
+std::string procName(pid_t pid, const std::string& exe) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        char buf[512];
+        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0) {
+            buf[n] = '\0';
+            std::string s(buf);
+            while (!s.empty() && isspace((unsigned char)s.front())) s.erase(s.begin());
+            while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
+            if (!s.empty()) return s;
+        }
+    }
+    auto pos = exe.rfind('/');
+    return pos == std::string::npos ? exe : exe.substr(pos + 1);
+}
+
+// Does module `m` declare a target matching the process's executable?
+bool moduleMatchesExe(const ModuleInfo& m, const std::string& exe) {
+    if (exe.empty()) return false;
+    const auto pos = exe.rfind('/');
+    const std::string name = pos == std::string::npos ? exe : exe.substr(pos + 1);
+    for (const auto& t : m.targets) {
+        if (t.is_name ? (name == t.value) : (exe == t.value)) return true;
+    }
+    return false;
+}
+
+// Record a successful injection for every module that targets this process.
+// Called from the STATE_INIT completion path, before detaching.
+void recordSuccess(pid_t pid, const std::string& exe) {
+    const std::string name = procName(pid, exe);
+    bool changed = false;
+    for (auto& kv : g_modules) {
+        if (moduleMatchesExe(kv.second, exe)) {
+            kv.second.processes.emplace_back(pid, name);
+            changed = true;
+        }
+    }
+    if (changed) g_state_dirty = true;
+}
+
+// Record an injection failure/miss for every module that targets this process.
+// Repeated identical failures (same process name + same reason) are collapsed
+// into a single entry: they carry no new information, and appending them would
+// grow the list and force a snapshot rewrite on every occurrence (e.g. a
+// process that keeps failing to start would otherwise grind the flash).
+void recordFailure(pid_t pid, const std::string& exe, const std::string& reason) {
+    const std::string name = procName(pid, exe);
+    bool changed = false;
+    for (auto& kv : g_modules) {
+        if (!moduleMatchesExe(kv.second, exe)) continue;
+        bool dup = false;
+        for (const auto& f : kv.second.failed) {
+            if (f.first == name && f.second == reason) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+        kv.second.failed.emplace_back(name, reason);
+        changed = true;
+    }
+    if (changed) g_state_dirty = true;
+}
+
+// Collect the (static) system info once at startup. This mirrors what the old
+// znn_api.sh gathered on every WebUI request; doing it here means the WebUI
+// reads a snapshot instead of spawning shells and probing the device.
+void collectSystemInfo() {
+    struct utsname u {};
+    if (uname(&u) == 0) g_system.kernel = u.release;
+
+    char buf[PROP_VALUE_MAX];
+    if (__system_property_get("ro.build.version.sdk", buf) > 0) {
+        g_system.sdk = atoi(buf);
+    }
+    if (__system_property_get("ro.product.cpu.abi", buf) > 0) g_system.abi = buf;
+    if (__system_property_get("ro.product.cpu.abilist", buf) > 0) g_system.abilist = buf;
+
+    auto firstLine = [](const char* bin, const char* arg) -> std::string {
+        std::string cmd = bin;
+        if (arg) cmd += std::string(" ") + arg;
+        FILE* p = popen(cmd.c_str(), "r");
+        if (!p) return {};
+        char line[256];
+        std::string out;
+        if (fgets(line, sizeof(line), p)) out = line;
+        pclose(p);
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+        return out;
+    };
+
+    if (access("/data/adb/ksud", X_OK) == 0) {
+        g_system.root.kernel_su = firstLine("/data/adb/ksud", "--version");
+    }
+    if (access("/data/adb/magisk/magisk", X_OK) == 0) {
+        g_system.root.magisk = firstLine("/data/adb/magisk/magisk", "-v");
+        if (g_system.root.magisk.empty()) g_system.root.magisk = firstLine("/data/adb/magisk/magisk", "-V");
+    }
+    if (access("/data/adb/apd", X_OK) == 0) {
+        g_system.root.apatch = firstLine("/data/adb/apd", "--version");
+    }
+}
+
+void appendRootJson(std::string& out, const RootImplInfo& r) {
+    out += "{\"kernelSU\":\"" + jsonEscape(r.kernel_su) + "\",\"magisk\":\"" +
+           jsonEscape(r.magisk) + "\",\"apatch\":\"" + jsonEscape(r.apatch) + "\"}";
+}
+
+void appendModuleJson(std::string& out, const ModuleInfo& m) {
+    out += "{\"id\":\"" + jsonEscape(m.id) + "\",\"name\":\"" + jsonEscape(m.name) +
+           "\",\"version\":\"" + jsonEscape(m.version) + "\",\"processes\":[";
+    bool first = true;
+    for (const auto& [pid, name] : m.processes) {
+        if (!first) out += ",";
+        first = false;
+        out += "{\"pid\":" + std::to_string(pid) + ",\"name\":\"" + jsonEscape(name) + "\"}";
+    }
+    out += "],\"failed\":[";
+    first = true;
+    for (const auto& [name, reason] : m.failed) {
+        if (!first) out += ",";
+        first = false;
+        out += "{\"name\":\"" + jsonEscape(name) + "\",\"reason\":\"" + jsonEscape(reason) + "\"}";
+    }
+    out += "]}";
+}
+
+std::string buildStateJson() {
+    std::string out;
+    out.reserve(2048);
+    out += "{\"running\":true,\"pid\":" + std::to_string(getpid()) +
+           ",\"mode\":\"" + (g_mode == 1 ? "compat" : "classic") +
+           "\",\"zygiskCompat\":" + (g_mode == 1 ? "true" : "false") +
+           ",\"version\":\"" + jsonEscape(ZNN_VERSION) + "\",\"system\":{";
+    out += "\"kernel\":\"" + jsonEscape(g_system.kernel) + "\",\"sdk\":" + std::to_string(g_system.sdk) +
+           ",\"abi\":\"" + jsonEscape(g_system.abi) + "\",\"abilist\":\"" + jsonEscape(g_system.abilist) +
+           "\",\"root\":";
+    appendRootJson(out, g_system.root);
+    out += "},\"modules\":[";
+    bool first = true;
+    for (const auto& kv : g_modules) {
+        if (!first) out += ",";
+        first = false;
+        appendModuleJson(out, kv.second);
+    }
+    out += "]}";
+    return out;
+}
+
+// Atomically persist the snapshot (tmp file + rename), so a reader never
+// observes a torn write. The daemon runs as root; /data/adb/zygisksu follows
+// the original Zygisk Next runtime-directory convention. If the content is
+// identical to the last persisted snapshot, nothing touches the disk — this is
+// what keeps an idle daemon from grinding the flash with periodic rewrites.
+void writeStateSnapshot() {
+    const std::string json = buildStateJson();
+    if (json == g_last_state_json) return;
+
+    mkdir(kStateDir, 0755);
+
+    int fd = open(kStateTmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    size_t off = 0;
+    while (off < json.size()) {
+        ssize_t n = write(fd, json.data() + off, json.size() - off);
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    fsync(fd);
+    close(fd);
+    if (off != json.size()) {
+        unlink(kStateTmp);
+        return;
+    }
+    if (rename(kStateTmp, kStateFile) == 0) {
+        g_last_state_json = json;
+    }
+}
+
+// Extract a balanced {…} or […] JSON value located after `marker`.
+bool extractBalanced(const std::string& s, const char* marker, std::string* out) {
+    size_t i = s.find(marker);
+    if (i == std::string::npos) return false;
+    i += strlen(marker);
+    while (i < s.size() && isspace((unsigned char)s[i])) ++i;
+    if (i >= s.size() || (s[i] != '{' && s[i] != '[')) return false;
+    const char open = s[i], close = open == '{' ? '}' : ']';
+    int depth = 0;
+    bool in_str = false;
+    for (size_t j = i; j < s.size(); ++j) {
+        const char c = s[j];
+        if (in_str) {
+            if (c == '\\') { ++j; continue; }
+            if (c == '"') in_str = false;
+            continue;
+        }
+        if (c == '"') { in_str = true; continue; }
+        if (c == open) ++depth;
+        else if (c == close && --depth == 0) {
+            *out = s.substr(i, j - i + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Look up `"key":value` (a scalar, no surrounding whitespace assumptions) and
+// return the value verbatim.
+bool extractScalar(const std::string& s, const char* key, std::string* out) {
+    std::string pat = std::string("\"") + key + "\":";
+    size_t i = s.find(pat);
+    if (i == std::string::npos) return false;
+    i += pat.size();
+    size_t j = i;
+    while (j < s.size() && s[j] != ',' && s[j] != '}') ++j;
+    *out = s.substr(i, j - i);
+    return true;
+}
+
+// Is `pid` an alive injector daemon?
+bool isInjectorAlive(pid_t pid) {
+    if (pid <= 1) return false;
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    char comm[64] = {0};
+    const ssize_t n = read(fd, comm, sizeof(comm) - 1);
+    close(fd);
+    return n > 0 && strncmp(comm, "injector", 8) == 0;
+}
+
+// Fallback: find the daemon pid by scanning /proc comm (used when the state
+// file is missing or stale, e.g. right after a daemon restart).
+pid_t findInjectorPid() {
+    DIR* d = opendir("/proc");
+    if (!d) return 0;
+    pid_t found = 0;
+    struct dirent* de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] < '0' || de->d_name[0] > '9') continue;
+        const pid_t pid = static_cast<pid_t>(strtol(de->d_name, nullptr, 10));
+        if (pid > 1 && isInjectorAlive(pid)) {
+            found = pid;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+// WebUI control interface: `injector --ctl <status|system|modules|rescan>`.
+// Reads the daemon-written snapshot and prints JSON on stdout. This replaces
+// the old znn_api.sh entirely: nothing is scanned on demand, the daemon's
+// recorded state is simply echoed back.
+int ctlMain(const char* cmd) {
+    std::string state;
+    {
+        int fd = open(kStateFile, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            char buf[8192];
+            ssize_t n;
+            while ((n = read(fd, buf, sizeof(buf))) > 0) state.append(buf, static_cast<size_t>(n));
+            close(fd);
+        }
+    }
+
+    if (strcmp(cmd, "rescan") == 0) {
+        pid_t pid = findInjectorPid();
+        if (pid <= 0) {
+            printf("injector is not running\n");
+            return 1;
+        }
+        kill(pid, SIGHUP);
+        printf("injector (%d) requested to rescan modules\n", pid);
+        return 0;
+    }
+
+    if (strcmp(cmd, "status") == 0) {
+        pid_t pid = 0;
+        std::string spid, zmode;
+        if (extractScalar(state, "pid", &spid)) pid = static_cast<pid_t>(strtol(spid.c_str(), nullptr, 10));
+        if (extractScalar(state, "mode", &zmode) && zmode.size() >= 2 &&
+            zmode.front() == '"' && zmode.back() == '"') {
+            // extractScalar returns the raw JSON token including the quotes;
+            // strip them so the field is emitted as a single-quoted string.
+            zmode = zmode.substr(1, zmode.size() - 2);
+        }
+        const bool alive = isInjectorAlive(pid);
+        // The snapshot can be stale (daemon restarted); fall back to /proc.
+        if (!alive) {
+            pid_t found = findInjectorPid();
+            if (found > 0) {
+                pid = found;
+            }
+        }
+        const bool running = pid > 0 && isInjectorAlive(pid);
+        const bool compat = running && zmode.find("compat") != std::string::npos;
+        printf("{\"running\":%s,\"pid\":%d,\"zygiskCompat\":%s,\"mode\":\"%s\"}\n",
+               running ? "true" : "false", running ? pid : 0, compat ? "true" : "false",
+               zmode.empty() ? "unknown" : zmode.c_str());
+        return 0;
+    }
+
+    if (strcmp(cmd, "system") == 0) {
+        std::string sys;
+        if (extractBalanced(state, "\"system\":", &sys)) {
+            printf("%s\n", sys.c_str());
+        } else {
+            printf("{\"kernel\":\"\",\"sdk\":0,\"abi\":\"\",\"abilist\":\"\",\"root\":"
+                   "{\"kernelSU\":\"\",\"magisk\":\"\",\"apatch\":\"\"}}\n");
+        }
+        return 0;
+    }
+
+    if (strcmp(cmd, "modules") == 0) {
+        std::string mods;
+        if (extractBalanced(state, "\"modules\":", &mods)) {
+            printf("%s\n", mods.c_str());
+        } else {
+            printf("[]\n");
+        }
+        return 0;
+    }
+
+    fprintf(stderr, "usage: injector --ctl <status|system|modules|rescan>\n");
+    return 1;
 }
 
 // Ptrace memory helpers
@@ -437,6 +897,7 @@ struct Tracee {
     Regs saved;                  // registers captured when the entry was reached
     std::string loader;          // loader path (in the injector's filesystem)
     std::vector<uint8_t> content;  // loader bytes to be written into the memfd
+    std::string exe;             // target executable path (for the WebUI state)
     uint64_t deadline_ms = 0;    // STATE_ENTRY timeout (poll-seized tracees)
 };
 
@@ -681,6 +1142,7 @@ void handleExec(pid_t pid, Tracee& t) {
         g_tracees.erase(pid);
         return;
     }
+    t.exe = exe;
 
     bool match = false;
     std::string name;
@@ -821,6 +1283,7 @@ void handleTrap(pid_t pid, Tracee& t) {
         // detach. A created memfd is deliberately left open (see loader.cpp).
         auto bail = [&](const char* reason) {
             LOGE("%s (pid %d)", reason, pid);
+            recordFailure(pid, t.exe, reason);
             restoreEntry(pid, t);
             setRegs(pid, &t.saved);
             ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -836,6 +1299,7 @@ void handleTrap(pid_t pid, Tracee& t) {
         int memfd = static_cast<int>(getRetVal(&regs));
         if (memfd < 0) {
             LOGE("memfd_create failed for pid %d (%d)", pid, memfd);
+            recordFailure(pid, t.exe, "memfd_create failed");
             restoreEntry(pid, t);
             setRegs(pid, &t.saved);
             ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -849,6 +1313,7 @@ void handleTrap(pid_t pid, Tracee& t) {
         }
         if (!writeToTargetFd(pid, memfd, t.content.data(), t.content.size())) {
             LOGE("failed to write to memfd %d of pid %d", memfd, pid);
+            recordFailure(pid, t.exe, "cannot write loader to memfd");
             restoreEntry(pid, t);
             setRegs(pid, &t.saved);
             ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -912,6 +1377,7 @@ void handleTrap(pid_t pid, Tracee& t) {
             uintptr_t dlsym_addr = resolveSymbol(pid, is64, "libdl.so", "dlsym");
             if (!dlsym_addr) {
                 LOGE("failed to resolve dlsym for pid %d", pid);
+                recordFailure(pid, t.exe, "cannot resolve dlsym");
                 restoreEntry(pid, t);
                 setRegs(pid, &t.saved);
                 ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -952,6 +1418,7 @@ void handleTrap(pid_t pid, Tracee& t) {
         if (!dlerror_addr || !setupCall(pid, &regs, dlerror_addr, t.entry, nullptr, 0)) {
             LOGE("dlopen(%s) failed for pid %d (cannot resolve/call dlerror)",
                  t.loader.c_str(), pid);
+            recordFailure(pid, t.exe, "dlopen failed (cannot resolve dlerror)");
             restoreEntry(pid, t);
             setRegs(pid, &t.saved);
             ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -977,6 +1444,7 @@ void handleTrap(pid_t pid, Tracee& t) {
         uintptr_t init_fn = getRetVal(&regs);
         if (!init_fn) {
             LOGE("dlsym(znn_loader_init) failed for pid %d", pid);
+            recordFailure(pid, t.exe, "dlsym znn_loader_init failed");
             restoreEntry(pid, t);
             setRegs(pid, &t.saved);
             ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -998,6 +1466,7 @@ void handleTrap(pid_t pid, Tracee& t) {
 
     if (t.state == STATE_INIT) {
         LOGI("loader initialized in pid %d", pid);
+        recordSuccess(pid, t.exe);
         restoreEntry(pid, t);
         setRegs(pid, &t.saved);
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -1017,6 +1486,7 @@ void handleTrap(pid_t pid, Tracee& t) {
         uintptr_t err_ptr = getRetVal(&regs);
         std::string err = err_ptr ? readCString(pid, err_ptr) : "(null)";
         LOGE("dlopen(%s) failed for pid %d: %s", t.loader.c_str(), pid, err.c_str());
+        recordFailure(pid, t.exe, "dlopen failed: " + err);
         if (err.find("Permission denied") != std::string::npos) {
             LOGE("hint for pid %d: the memfd is labeled \"tmpfs\" (GKI) or \"unlabeled\" "
                  "(other kernels) and the target domain cannot access it - make sure "
@@ -1048,7 +1518,7 @@ void attachChild(pid_t child) {
     if (g_tracees.count(child)) {
         return;
     }
-    g_tracees[child] = Tracee{child, STATE_TRACED, Arch::kUnknown, 0, {0}, 0, {}, {}, {}};
+    g_tracees[child] = Tracee{child, STATE_TRACED, Arch::kUnknown, 0, {0}, 0, {}, {}, {}, {}};
 }
 
 // Target-spawn discovery for compat mode (no ptrace on init)
@@ -1115,12 +1585,16 @@ enum class SeizeResult { kSeized, kRetry, kGiveUp };
 
 SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     int fd = open(("/proc/" + std::to_string(pid) + "/exe").c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return SeizeResult::kGiveUp;
+    if (fd < 0) {
+        return SeizeResult::kGiveUp;
+    }
     uint8_t hdr[64] = {0};
     ssize_t r = pread(fd, hdr, sizeof(hdr), 0);
     close(fd);
     ElfHdrInfo eh;
-    if (r < 52 || !readElfHdr(hdr, static_cast<size_t>(r), &eh)) return SeizeResult::kGiveUp;
+    if (r < 52 || !readElfHdr(hdr, static_cast<size_t>(r), &eh)) {
+        return SeizeResult::kGiveUp;
+    }
 
     Arch arch = archFromElf(eh);
     if (arch == Arch::kUnknown) {
@@ -1135,7 +1609,9 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
             break;
         }
     }
-    if (!base) return SeizeResult::kGiveUp;
+    if (!base) {
+        return SeizeResult::kGiveUp;
+    }
     bool thumb = false;
     uintptr_t entry = eh.entry;
     if (arch == Arch::kArm32 && (entry & 1)) {
@@ -1143,7 +1619,9 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
         entry &= ~1ULL;
     }
     entry = (eh.type == ET_DYN) ? base + entry : entry;
-    if (!entry) return SeizeResult::kGiveUp;
+    if (!entry) {
+        return SeizeResult::kGiveUp;
+    }
 
     if (ptrace(PTRACE_SEIZE, pid, nullptr, nullptr) != 0) {
         if (errno == EPERM || errno == EACCES) return SeizeResult::kRetry;
@@ -1202,6 +1680,7 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     t.arch = arch;
     t.entry = entry;
     t.loader = eh.is64 ? g_loader64 : g_loader32;
+    t.exe = exe;
     t.deadline_ms = nowMs() + 3000;  // the linker must reach the entry soon
     if (!setEntryBreakpoint(pid, &t, thumb)) {
         ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
@@ -1454,6 +1933,13 @@ void handleEvent(pid_t pid, int status) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // WebUI control mode: `injector --ctl <status|system|modules|rescan>`.
+    // Runs as a short-lived client that echoes the daemon's state snapshot; it
+    // never scans /proc on demand and needs no module-dir argument.
+    if (argc > 2 && strcmp(argv[1], "--ctl") == 0) {
+        return ctlMain(argv[2]);
+    }
+
     if (argc > 1) {
         g_module_dir = argv[1];
     } else {
@@ -1495,6 +1981,7 @@ int main(int argc, char** argv) {
     }
 
     signal(SIGHUP, on_sighup);
+    collectSystemInfo();
     collectTargets();
     LOGI("collected %zu zn modules", g_targets.size());
 
@@ -1513,18 +2000,26 @@ int main(int argc, char** argv) {
                  "using compat mode (poll /proc) instead", strerror(errno));
             g_mode = 1;
         } else {
-            g_tracees[1] = Tracee{1, STATE_TRACED, Arch::kUnknown, 0, {0}, 0, {}, {}, {}};
+            g_tracees[1] = Tracee{1, STATE_TRACED, Arch::kUnknown, 0, {0}, 0, {}, {}, {}, {}};
             LOGI("successfully seized init");
         }
     }
 
     time_t last_rescan = 0;
     uint64_t last_zygisk_check = 0;
+    uint64_t last_state_write_ms = 0;
+
+    // Publish the initial snapshot right away (pid/mode/system/modules), so the
+    // WebUI has data even before the first periodic rescan.
+    writeStateSnapshot();
+    last_state_write_ms = nowMs();
+
     for (;;) {
         if (g_rescan) {
             g_rescan = 0;
             collectTargets();
             last_rescan = time(nullptr);
+            g_state_dirty = true;
             LOGI("rescanned znn targets (%zu)", g_targets.size());
         }
 
@@ -1568,7 +2063,22 @@ int main(int argc, char** argv) {
         if (tnow - last_rescan >= 5) {
             collectTargets();
             last_rescan = tnow;
+            g_state_dirty = true;
         }
+
+        // Persist the WebUI snapshot: immediately after a rescan or when events
+        // (injection success/failure) dirtied it, throttled to ~1 write per 2s
+        // so a burst of injection events coalesces into a single rewrite. The
+        // content comparison inside writeStateSnapshot() additionally skips the
+        // disk entirely when nothing actually changed — deduplicated failures
+        // and an idle daemon therefore produce zero writes.
+        const uint64_t now = nowMs();
+        if (g_state_dirty && (now - last_state_write_ms >= 2000 || last_state_write_ms == 0)) {
+            writeStateSnapshot();
+            g_state_dirty = false;
+            last_state_write_ms = now;
+        }
+
         usleep(g_mode == 1 ? 2000 : 1000);
     }
     return 0;

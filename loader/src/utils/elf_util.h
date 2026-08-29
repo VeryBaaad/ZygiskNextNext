@@ -54,8 +54,8 @@ public:
 
 private:
     void ensureParsed() const;
-    void parseSymbols(const ElfW(Shdr)* sym_sh, const ElfW(Shdr)* str_sh, const char* strtab,
-                      const ElfW(Sym)* symtab, size_t count, uintptr_t bias) const;
+    void parseSymbols(const ElfW(Shdr)* str_sh, const char* strtab, const ElfW(Sym)* symtab,
+                      size_t count, uintptr_t bias) const;
     bool parseGnuDebugData(const uint8_t* data, size_t size) const;
 
     std::string path_;
