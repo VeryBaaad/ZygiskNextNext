@@ -100,13 +100,9 @@ struct ModuleInfo {
     std::vector<std::pair<std::string, std::string>> failed;
 };
 
-// Runtime directory, following the original Zygisk Next convention. The state
-// snapshot the WebUI reads lives here; anything under /data/adb/zygisksu is
-// fair game for the daemon (the module dir itself is root-managed and must
-// stay untouched).
-constexpr const char* kStateDir = "/data/adb/zygisksu";
-constexpr const char* kStateFile = "/data/adb/zygisksu/znn_state.json";
-constexpr const char* kStateTmp = "/data/adb/zygisksu/znn_state.json.tmp";
+constexpr const char* kStateDir = "/data/adb/zygisknextsu";
+constexpr const char* kStateFile = "/data/adb/zygisknextsu/znn_state.json";
+constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
 
 // Root implementation versions, collected once at startup.
 struct RootImplInfo {
@@ -409,9 +405,6 @@ std::string buildStateJson() {
     return out;
 }
 
-// Atomically persist the snapshot (tmp file + rename), so a reader never
-// observes a torn write. The daemon runs as root; /data/adb/zygisksu follows
-// the original Zygisk Next runtime-directory convention.
 void writeStateSnapshot() {
     mkdir(kStateDir, 0755);
     const std::string json = buildStateJson();
