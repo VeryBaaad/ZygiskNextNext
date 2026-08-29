@@ -97,11 +97,6 @@ extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'loader-ctl.sh'   "$MODPATH"
 mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
-ui_print "- Extracting webroot"
-for f in $(unzip -Z1 "$ZIPFILE" 'webroot/*' | grep -Ev '/$|\.sha256$'); do
-  extract "$ZIPFILE" "$f" "$MODPATH"
-done
-
 mkdir "$MODPATH/bin"
 mkdir "$MODPATH/lib"
 mkdir "$MODPATH/lib64"
@@ -118,6 +113,8 @@ else
   extract "$ZIPFILE" 'lib/arm64-v8a/libloader.so' "$MODPATH/lib64" true
   extract "$ZIPFILE" 'bin/arm64-v8a/injector' "$MODPATH/bin" true
 fi
+
+unzip -o "$ZIPFILE" "webroot/*" -x "*.sha256" -d "$MODPATH"
 
 ui_print "- Setting permissions"
 set_perm_recursive "$MODPATH/bin" 0 0 0755 0755
