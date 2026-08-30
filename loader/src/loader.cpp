@@ -861,6 +861,9 @@ void loadEntry(const ModuleEntry& e) {
 }
 
 void loadAllModules() {
+    // Diagnostic: who is running the loader and can it see the module dir?
+    LOGI("loadAllModules in %s (uid=%d), scanning /data/adb/modules", getProcessPath().c_str(),
+         getuid());
     DIR* d = opendir("/data/adb/modules");
     if (!d) {
         LOGW("cannot open /data/adb/modules: %s", strerror(errno));
@@ -874,14 +877,22 @@ void loadAllModules() {
         std::string dir = std::string("/data/adb/modules/") + de->d_name;
         if (access((dir + "/disable").c_str(), F_OK) == 0) continue;
         if (access((dir + "/remove").c_str(), F_OK) == 0) continue;
-        if (access((dir + "/zn_modules.txt").c_str(), R_OK) != 0) continue;
+        if (access((dir + "/zn_modules.txt").c_str(), R_OK) != 0) {
+            LOGI("loadAllModules: %s has no readable zn_modules.txt (%s), skipping",
+                 dir.c_str(), strerror(errno));
+            continue;
+        }
         moddirs.push_back(std::move(dir));
     }
     closedir(d);
+    LOGI("loadAllModules: %zu candidate module dir(s)", moddirs.size());
 
     for (const auto& moddir : moddirs) {
         for (auto& e : parseZnModulesFile(moddir, moddir + "/zn_modules.txt")) {
-            if (matchEntry(e)) loadEntry(e);
+            const bool m = matchEntry(e);
+            LOGI("loadAllModules: %s target=%s companion=%d lib=%s -> %s", moddir.c_str(),
+                 e.target.c_str(), e.companion ? 1 : 0, e.lib.c_str(), m ? "match" : "no match");
+            if (m) loadEntry(e);
         }
     }
 }

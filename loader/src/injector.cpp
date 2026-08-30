@@ -2144,6 +2144,59 @@ void acceptCompanionRequests(int listen_fd) {
     }
 }
 
+// Recursively add world read/search permissions under `dir` (only ever ORs
+// bits in, never removes or changes ownership). The ZNN loader runs inside the
+// target process and must read module configs (zn_modules.txt) and libraries
+// (zygisk/*.so) directly from /data/adb/modules. Root targets (netd, adbd,
+// uid 0) can do so, but non-root targets such as artd (uid 1082) hit a DAC
+// "Permission denied" otherwise. This mirrors ZygiskNext, whose root daemon is
+// the one that reads module files — here the root injector daemon simply makes
+// them readable for the target.
+void makeModulesWorldReadable(const std::string& dir) {
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    struct stat st;
+    if (stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+        chmod(dir.c_str(), st.st_mode | S_IROTH | S_IXOTH);
+    }
+    struct dirent* de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.' && (de->d_name[1] == '\0' ||
+                                     (de->d_name[1] == '.' && de->d_name[2] == '\0'))) {
+            continue;
+        }
+        const std::string p = dir + "/" + de->d_name;
+        if (lstat(p.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            makeModulesWorldReadable(p);
+        } else if (S_ISREG(st.st_mode)) {
+            chmod(p.c_str(), st.st_mode | S_IROTH);
+        }
+    }
+    closedir(d);
+}
+
+// Diagnostic: after the DAC fix, confirm a non-root reader can now reach a
+// module config. Logs the first zn_modules.txt access result.
+void logModulesReadability() {
+    DIR* d = opendir("/data/adb/modules");
+    if (!d) {
+        LOGW("modules readability: cannot open /data/adb/modules: %s", strerror(errno));
+        return;
+    }
+    struct dirent* de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        std::string zn = std::string("/data/adb/modules/") + de->d_name + "/zn_modules.txt";
+        if (access(zn.c_str(), R_OK) == 0) {
+            LOGI("modules readability: %s readable (R_OK ok)", zn.c_str());
+        } else {
+            LOGI("modules readability: %s NOT readable: %s", zn.c_str(), strerror(errno));
+        }
+    }
+    closedir(d);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2199,6 +2252,11 @@ int main(int argc, char** argv) {
     collectSystemInfo();
     collectTargets();
     LOGI("collected %zu zn modules", g_targets.size());
+
+    // Non-root targets (e.g. artd, uid 1082) must be able to read module
+    // configs/libs in-process; ensure the /data/adb/modules tree is readable.
+    makeModulesWorldReadable("/data/adb/modules");
+    logModulesReadability();
 
     // Companion-spawn control socket (see kCompanionSock / runCompanionProcess).
     const int companion_listen_fd = createCompanionSocket();
