@@ -130,17 +130,8 @@ namespace {
 
 constexpr char kCmdConnect = 1;
 
-// Companion control channel to the injector daemon. The daemon runs as root,
-// so a companion spawned by it inherits the daemon's privileged SELinux
-// domain — required for modules whose companion process must talk to other
-// privileged daemons (e.g. LSPosed's companion connects to the lspd daemon's
-// "lspbridge" socket). ZygiskNextNext mirrors ZygiskNext here: the original ZN
-// daemon spawns `zn-companion64` from itself, and LSPosed reports "Zygisk Next
-// monitor ready" only when its ZN companion callbacks are delivered by such a
-// privileged companion process.
 constexpr char kCompanionSock[] = "/data/adb/zygisknextsu/companion.sock";
 constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
-// Commands sent over the companion socket (see injector.cpp handleCompanionRequest).
 constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
 constexpr uint32_t kCompanionCmdModules = 2;  // list modules matching this process
 
@@ -563,12 +554,6 @@ const ZygiskNextAPI kApiNoSymbolResolver = {
 
 // Companion process
 
-// Ask the injector daemon (running as root) to spawn the companion process for
-// `lib_path` and hand back the control socket. The daemon-spawned companion
-// runs in the daemon's own SELinux domain, which modules like LSPosed require
-// (their companion must connect to privileged daemons such as the lspd
-// "lspbridge" socket). Returns the control fd, or -1 when the daemon is not
-// reachable — the caller then falls back to an in-process fork.
 static int requestDaemonCompanion(const std::string& lib_path) {
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
@@ -581,8 +566,6 @@ static int requestDaemonCompanion(const std::string& lib_path) {
         return -1;
     }
 
-    // Bound the wait for the daemon's reply so a stuck daemon cannot hang
-    // module loading; the caller falls back to an in-process fork then.
     struct timeval tv {};
     tv.tv_sec = 5;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -607,8 +590,7 @@ static int requestDaemonCompanion(const std::string& lib_path) {
         return -1;
     }
 
-    // Receive the control socket (SCM_RIGHTS); the received byte is dropped
-    // (the daemon may send an acknowledgement in the future).
+    // Receive the control socket; the received byte is dropped
     uint32_t ack = 0;
     struct iovec iov {&ack, sizeof(ack)};
     char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
@@ -632,11 +614,6 @@ static int requestDaemonCompanion(const std::string& lib_path) {
     return cfd;
 }
 
-// dlopen a library from a file descriptor (a memfd received from the injector
-// daemon). bionic's namespace "permitted path" check is bypassed for a tmpfs
-// fd, and — crucially — the loader does not need to open /data/adb/modules
-// itself, which non-root targets (e.g. artd, uid 1082) cannot read. The fd is
-// deliberately left open: bionic does not own USE_LIBRARY_FD fds.
 static void* dlopenFromFd(int fd, const char* name, int flags) {
     android_dlextinfo ext = {};
     ext.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
@@ -644,9 +621,7 @@ static void* dlopenFromFd(int fd, const char* name, int flags) {
     return android_dlopen_ext(name, flags, &ext);
 }
 
-// Read exactly `len` bytes from `fd` via recvmsg. When `out_fd` is non-null,
-// capture the first SCM_RIGHTS fd delivered (a module record's memfd) and then
-// stop capturing. Returns true on success.
+// Read exactly `len` bytes from `fd` via recvmsg.
 static bool recvFull(int fd, void* buf, size_t len, int* out_fd) {
     auto* p = static_cast<char*>(buf);
     size_t off = 0;
@@ -676,20 +651,12 @@ static bool recvFull(int fd, void* buf, size_t len, int* out_fd) {
     return true;
 }
 
-// One module the daemon resolved for the current process. `fd` is a memfd
-// holding the module library, handed over by the root injector daemon so the
-// loader never has to read /data/adb/modules itself.
 struct DaemonModule {
     std::string lib_path;
     bool companion = false;
     int fd = -1;
 };
 
-// Ask the injector daemon (root) for the modules that apply to the current
-// process. The daemon reads every module's zn_modules.txt, matches against
-// `process_name`/`process_path`, memfd's each matching library and streams the
-// records (lib path, companion flag, memfd fd) back over SCM_RIGHTS. Returns
-// true on success (empty vector is a valid result).
 static bool requestModulesFromDaemon(const std::string& process_name,
                                      const std::string& process_path,
                                      std::vector<DaemonModule>& out) {
@@ -735,7 +702,7 @@ static bool requestModulesFromDaemon(const std::string& process_name,
             close(fd);
             return false;
         }
-        if (rlen == 0) break;  // terminator
+        if (rlen == 0) break;
         if (rlen > 4096) {
             close(fd);
             return false;
@@ -897,9 +864,7 @@ bool resolveLibPath(const ModuleEntry& e, std::string& out) {
 void loadEntry(const ModuleEntry& e, int module_fd = -1) {
     std::string lib_path;
     if (module_fd >= 0) {
-        // Provided by the root daemon: lib_path is already the resolved path,
-        // and the module library is handed over as a memfd so the loader does
-        // not have to read /data/adb/modules (non-root targets cannot).
+        // Provided by the root daemon: lib_path is already the resolved path.
         lib_path = e.lib;
     } else if (!resolveLibPath(e, lib_path)) {
         LOGE("module lib path %s is not inside module dir, skipping", e.lib.c_str());
@@ -934,22 +899,12 @@ void loadEntry(const ModuleEntry& e, int module_fd = -1) {
     // the companion would only waste a process. This gate is independent of the
     // `companion` flag in zn_modules.txt, which merely requests the companion.
     if (e.companion && m->target_api_version >= 3) {
-        // Preferred: let the injector daemon (root) spawn the companion, so it
-        // runs in the daemon's privileged SELinux domain. Modules such as
-        // LSPosed need this: their companion connects to privileged daemons
-        // (the lspd "lspbridge" socket) and only then can they announce the
-        // "Zygisk Next monitor" to the LSPosed daemon.
         int cfd = requestDaemonCompanion(lib_path);
         if (cfd >= 0) {
             LOGI("companion for %s spawned by injector daemon (fd %d)", lib_path.c_str(), cfd);
             handle->companion_fd = cfd;
             handle->companion_pid = -1;
         } else {
-            // Fallback: fork the companion in-process. This keeps companion
-            // support working when the daemon is unreachable (early boot
-            // races), at the cost of the target's SELinux domain — which is
-            // fine for ordinary modules, but insufficient for privileged
-            // companions (LSPosed).
             int sv[2];
             if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0) {
                 pid_t pid = fork();
@@ -993,12 +948,6 @@ void loadEntry(const ModuleEntry& e, int module_fd = -1) {
 }
 
 void loadAllModules() {
-    // Preferred path: get the modules for this process from the root injector
-    // daemon. The daemon reads zn_modules.txt and memfd's each matching library
-    // as root, so the loader does not need to read /data/adb/modules — which
-    // non-root targets (artd, uid 1082) cannot due to DAC permissions. This
-    // also keeps module files unreadable to ordinary apps (no detection
-    // surface), unlike making the module tree world-readable.
     std::vector<DaemonModule> mods;
     if (requestModulesFromDaemon(getProcessName(), getProcessPath(), mods)) {
         LOGI("loadAllModules: got %zu module(s) from injector daemon", mods.size());
