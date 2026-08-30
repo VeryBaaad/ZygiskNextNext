@@ -112,16 +112,8 @@ constexpr const char* kStateDir = "/data/adb/zygisknextsu";
 constexpr const char* kStateFile = "/data/adb/zygisknextsu/znn_state.json";
 constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
 
-// Companion-spawn control socket. The loader (inside target processes) asks
-// this daemon — which runs as root in the host's privileged SELinux domain —
-// to spawn a module's companion process. The spawned companion inherits this
-// domain, exactly like ZygiskNext's `zn-companion64`, which modules such as
-// LSPosed require (their companion talks to privileged daemons like the lspd
-// "lspbridge" socket; only then does LSPosed announce the "Zygisk Next
-// monitor"). Mirrors the constants in loader.cpp.
 constexpr const char* kCompanionSock = "/data/adb/zygisknextsu/companion.sock";
 constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
-// Commands (see loader.cpp for the matching constants).
 constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
 constexpr uint32_t kCompanionCmdModules = 2;  // list modules for a process
 
@@ -1509,11 +1501,6 @@ void handleTrap(pid_t pid, Tracee& t) {
         LOGE("dlopen(%s) failed for pid %d: %s", t.loader.c_str(), pid, err.c_str());
         recordFailure(pid, t.exe, "dlopen failed: " + err);
         if (err.find("Permission denied") != std::string::npos) {
-            // The target created the memfd itself, so the kernel labels it with
-            // the target domain's own tmpfs type on many devices (e.g. artd ->
-            // "artd_tmpfs"), not plain "tmpfs"/"unlabeled". dlopen() maps it
-            // PROT_EXEC, which needs `execute` on that exact label; most
-            // domains lack it on their own *_tmpfs type.
             LOGE("hint for pid %d: dlopen needs the `execute` permission on the "
                  "memfd's SELinux label (\"tmpfs\", \"unlabeled\", or the target's "
                  "own <domain>_tmpfs, e.g. artd_tmpfs). Make sure the module "
@@ -1635,11 +1622,6 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
         if (m.offset == 0 && m.path == exe) {
             base = m.start;
         }
-        // A fork of an already-injected process (e.g. a module companion
-        // child, or any child spawned by a target after injection) inherits
-        // the loader mappings and is already past its own entry, so there is
-        // nothing to inject: an entry breakpoint would never fire. Skip it
-        // instead of wasting the 3s STATE_ENTRY timeout.
         if (m.path.find("libloader.so") != std::string::npos ||
             m.path.find("memfd:loader") != std::string::npos) {
             has_loader = true;
@@ -1971,26 +1953,15 @@ void handleEvent(pid_t pid, int status) {
     ptrace(PTRACE_CONT, pid, nullptr, reinterpret_cast<void*>(sig));
 }
 
-// Companion process loop, run in a child forked from this daemon. The child
-// dlopens the module library and drives its zn_companion_module callbacks
-// (onCompanionLoaded + onModuleConnected). Running the companion from the
-// daemon — instead of from the target process — puts it in the daemon's
-// privileged SELinux domain, mirroring ZygiskNext's `zn-companion64`. Modules
-// such as LSPosed need this: their companion connects to privileged daemons
-// (the lspd "lspbridge" socket), which is how LSPosed detects the "Zygisk
-// Next monitor".
+// Companion process loop, run in a child forked from this daemon.
 [[noreturn]] void runCompanionProcess(const char* lib_path, int ctl_fd) {
-    // The daemon is identified by its comm ("injector") in /proc scans
-    // (findInjectorPid); give the companion child its own name so it is never
-    // mistaken for the daemon (e.g. a `--ctl rescan` would otherwise SIGHUP
-    // and kill it).
     prctl(PR_SET_NAME, "znn-companion", 0, 0, 0);
 
     void* lib = dlopen(lib_path, RTLD_NOW);
     if (!lib) {
         // bionic's default linker namespace may reject /data paths; fall back
         // to loading through a memfd, like the loader does for target
-        // processes (dlopenViaFd in loader.cpp).
+        // processes.
         std::vector<uint8_t> bytes;
         if (readFile(lib_path, bytes)) {
             const int memfd = static_cast<int>(
@@ -2036,7 +2007,7 @@ void handleEvent(pid_t pid, int status) {
         ssize_t n = recvmsg(ctl_fd, &msg, 0);
         if (n <= 0) break;
 
-        if (cmd != 1) continue;  // kCmdConnect, see loader.cpp
+        if (cmd != 1) continue;  // kCmdConnect
 
         for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
             if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
@@ -2045,14 +2016,13 @@ void handleEvent(pid_t pid, int status) {
             }
         }
         if (fd >= 0) {
-            m->onModuleConnected(fd);  // module owns and closes fd
+            m->onModuleConnected(fd);
             fd = -1;
         }
     }
     _exit(0);
 }
 
-// Resolve a module library path relative to its module directory.
 static bool resolveModuleLib(const std::string& moddir, const std::string& lib,
                              std::string& out) {
     std::string candidate = lib;
@@ -2063,9 +2033,7 @@ static bool resolveModuleLib(const std::string& moddir, const std::string& lib,
     return true;
 }
 
-// Copy a file into a fresh memfd (the daemon runs as root, so it can read
-// /data/adb/modules even though non-root targets cannot). Returns the memfd or
-// -1.
+// Copy a file into a fresh memfd. Returns the memfd or -1.
 static int memfdFromFile(const std::string& path) {
     int f = open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (f < 0) return -1;
@@ -2110,7 +2078,6 @@ static int memfdFromFile(const std::string& path) {
     return memfd;
 }
 
-// Send one module record (lib path, companion flag, memfd fd) to the loader.
 void sendModuleRecord(int client, const std::string& lib_path, bool companion, int mfd) {
     uint32_t plen = static_cast<uint32_t>(lib_path.size() + 1);
     uint32_t comp = companion ? 1 : 0;
@@ -2135,10 +2102,7 @@ void sendModuleRecord(int client, const std::string& lib_path, bool companion, i
     sendmsg(client, &msg, 0);
 }
 
-// Answer a "list modules" request: scan /data/adb/modules, parse every module's
-// zn_modules.txt, and stream back the records whose target matches the calling
-// process (name or path), memfd'ing each library as root. Terminates with a
-// zero-length lib path.
+// Answer a "list modules" request.
 void sendModulesForProcess(int client, const std::string& process_name,
                            const std::string& process_path) {
     DIR* d = opendir("/data/adb/modules");
@@ -2202,9 +2166,6 @@ void sendModulesForProcess(int client, const std::string& process_name,
     write(client, &zero, sizeof(zero));
 }
 
-// Handle one companion-spawn request from a loader running in a target
-// process: read the module library path, fork the companion, and hand the
-// control socket back to the loader over `client`.
 void handleCompanionRequest(int client) {
     auto readAll = [&](void* buf, size_t len) {
         auto* p = static_cast<char*>(buf);
@@ -2282,7 +2243,7 @@ void handleCompanionRequest(int client) {
     }
     close(sv[1]);
     if (pid > 0) {
-        // Send the control socket back to the loader (SCM_RIGHTS).
+        // Send the control socket back to the loader.
         struct iovec iov = {&magic, sizeof(magic)};
         char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
         struct msghdr msg = {};
@@ -2303,7 +2264,6 @@ void handleCompanionRequest(int client) {
     close(client);
 }
 
-// Create the companion-spawn control socket. Returns the listening fd, or -1.
 int createCompanionSocket() {
     unlink(kCompanionSock);
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -2318,14 +2278,13 @@ int createCompanionSocket() {
         return -1;
     }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-    // World-writable so target processes can connect; SELinux still gates the
-    // access (see module/src/sepolicy.rule).
+    // World-writable so target processes can connect; SELinux still gates the access.
     chmod(kCompanionSock, 0666);
     LOGI("companion socket ready at %s", kCompanionSock);
     return fd;
 }
 
-// Drain pending companion-spawn requests (non-blocking).
+// Drain pending companion-spawn requests.
 void acceptCompanionRequests(int listen_fd) {
     if (listen_fd < 0) return;
     for (;;) {
@@ -2369,10 +2328,9 @@ int main(int argc, char** argv) {
 
     LOGI("Zygisk Next Next %s starting", ZNN_VERSION);
 
-    // Diagnostics: are the loaders present and what labels do they carry?
-    // (The label decides which SELinux rules the target needs for its own
+    // The label decides which SELinux rules the target needs for its own
     // module reads; the memfd dlopen itself needs `execute` on the memfd's
-    // label — see the `allow * * file execute` rule in module/src/sepolicy.rule.)
+    // label.
     for (const char* p : {g_loader64.c_str(), g_loader32.c_str()}) {
         char ctx[256];
         ssize_t n = lgetxattr(p, "security.selinux", ctx, sizeof(ctx) - 1);
@@ -2391,7 +2349,6 @@ int main(int argc, char** argv) {
     collectTargets();
     LOGI("collected %zu zn modules", g_targets.size());
 
-    // Companion-spawn control socket (see kCompanionSock / runCompanionProcess).
     const int companion_listen_fd = createCompanionSocket();
 
     // Choose the mode automatically. Classic (trace init) is deterministic but
