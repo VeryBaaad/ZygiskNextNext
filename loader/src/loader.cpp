@@ -40,6 +40,7 @@
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <mutex>
@@ -128,6 +129,17 @@ struct ModuleHandle {
 namespace {
 
 constexpr char kCmdConnect = 1;
+
+// Companion control channel to the injector daemon. The daemon runs as root,
+// so a companion spawned by it inherits the daemon's privileged SELinux
+// domain — required for modules whose companion process must talk to other
+// privileged daemons (e.g. LSPosed's companion connects to the lspd daemon's
+// "lspbridge" socket). ZygiskNextNext mirrors ZygiskNext here: the original ZN
+// daemon spawns `zn-companion64` from itself, and LSPosed reports "Zygisk Next
+// monitor ready" only when its ZN companion callbacks are delivered by such a
+// privileged companion process.
+constexpr char kCompanionSock[] = "/data/adb/zygisknextsu/companion.sock";
+constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
 
 std::mutex g_hook_mutex;
 std::set<uintptr_t> g_hooked;  // addresses currently inline-hooked
@@ -548,6 +560,74 @@ const ZygiskNextAPI kApiNoSymbolResolver = {
 
 // Companion process
 
+// Ask the injector daemon (running as root) to spawn the companion process for
+// `lib_path` and hand back the control socket. The daemon-spawned companion
+// runs in the daemon's own SELinux domain, which modules like LSPosed require
+// (their companion must connect to privileged daemons such as the lspd
+// "lspbridge" socket). Returns the control fd, or -1 when the daemon is not
+// reachable — the caller then falls back to an in-process fork.
+static int requestDaemonCompanion(const std::string& lib_path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, kCompanionSock, sizeof(addr.sun_path));
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    // Bound the wait for the daemon's reply so a stuck daemon cannot hang
+    // module loading; the caller falls back to an in-process fork then.
+    struct timeval tv {};
+    tv.tv_sec = 5;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // Request frame: magic u32 | path length u32 (incl. NUL) | path bytes.
+    const uint32_t magic = kCompanionReqMagic;
+    const uint32_t plen = static_cast<uint32_t>(lib_path.size() + 1);
+    auto writeAll = [&](const void* buf, size_t len) {
+        const auto* p = static_cast<const char*>(buf);
+        size_t off = 0;
+        while (off < len) {
+            const ssize_t n = write(fd, p + off, len - off);
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    };
+    if (!writeAll(&magic, sizeof(magic)) || !writeAll(&plen, sizeof(plen)) ||
+        !writeAll(lib_path.c_str(), plen)) {
+        close(fd);
+        return -1;
+    }
+
+    // Receive the control socket (SCM_RIGHTS); the received byte is dropped
+    // (the daemon may send an acknowledgement in the future).
+    uint32_t ack = 0;
+    struct iovec iov {&ack, sizeof(ack)};
+    char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+    struct msghdr msg {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsg_buf;
+    msg.msg_controllen = sizeof(cmsg_buf);
+
+    ssize_t n = recvmsg(fd, &msg, 0);
+    int cfd = -1;
+    if (n >= 0) {
+        for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                memcpy(&cfd, CMSG_DATA(cmsg), sizeof(int));
+                break;
+            }
+        }
+    }
+    close(fd);
+    return cfd;
+}
+
 [[noreturn]] void companionMain(const char* lib_path, int ctl_fd) {
     void* lib = dlopenViaFd(lib_path, RTLD_NOW);
     if (!lib) {
@@ -722,20 +802,37 @@ void loadEntry(const ModuleEntry& e) {
     // the companion would only waste a process. This gate is independent of the
     // `companion` flag in zn_modules.txt, which merely requests the companion.
     if (e.companion && m->target_api_version >= 3) {
-        int sv[2];
-        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                close(sv[0]);
-                companionMain(lib_path.c_str(), sv[1]);
-                _exit(0);
-            } else if (pid > 0) {
-                close(sv[1]);
-                handle->companion_fd = sv[0];
-                handle->companion_pid = pid;
-            } else {
-                close(sv[0]);
-                close(sv[1]);
+        // Preferred: let the injector daemon (root) spawn the companion, so it
+        // runs in the daemon's privileged SELinux domain. Modules such as
+        // LSPosed need this: their companion connects to privileged daemons
+        // (the lspd "lspbridge" socket) and only then can they announce the
+        // "Zygisk Next monitor" to the LSPosed daemon.
+        int cfd = requestDaemonCompanion(lib_path);
+        if (cfd >= 0) {
+            LOGI("companion for %s spawned by injector daemon (fd %d)", lib_path.c_str(), cfd);
+            handle->companion_fd = cfd;
+            handle->companion_pid = -1;
+        } else {
+            // Fallback: fork the companion in-process. This keeps companion
+            // support working when the daemon is unreachable (early boot
+            // races), at the cost of the target's SELinux domain — which is
+            // fine for ordinary modules, but insufficient for privileged
+            // companions (LSPosed).
+            int sv[2];
+            if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0) {
+                pid_t pid = fork();
+                if (pid == 0) {
+                    close(sv[0]);
+                    companionMain(lib_path.c_str(), sv[1]);
+                    _exit(0);
+                } else if (pid > 0) {
+                    close(sv[1]);
+                    handle->companion_fd = sv[0];
+                    handle->companion_pid = pid;
+                } else {
+                    close(sv[0]);
+                    close(sv[1]);
+                }
             }
         }
     } else if (e.companion) {

@@ -18,25 +18,33 @@
  */
 
 #include "utils/elf_util.h"
+#include "include/zygisk_next_api.h"
 
+#include <android/dlext.h>
 #include <android/log.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/memfd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/ptrace.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/xattr.h>
 #include <sys/system_properties.h>
 #include <time.h>
@@ -103,6 +111,16 @@ struct ModuleInfo {
 constexpr const char* kStateDir = "/data/adb/zygisknextsu";
 constexpr const char* kStateFile = "/data/adb/zygisknextsu/znn_state.json";
 constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
+
+// Companion-spawn control socket. The loader (inside target processes) asks
+// this daemon — which runs as root in the host's privileged SELinux domain —
+// to spawn a module's companion process. The spawned companion inherits this
+// domain, exactly like ZygiskNext's `zn-companion64`, which modules such as
+// LSPosed require (their companion talks to privileged daemons like the lspd
+// "lspbridge" socket; only then does LSPosed announce the "Zygisk Next
+// monitor"). Mirrors the constants in loader.cpp.
+constexpr const char* kCompanionSock = "/data/adb/zygisknextsu/companion.sock";
+constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
 
 // Root implementation versions, collected once at startup.
 struct RootImplInfo {
@@ -1950,6 +1968,182 @@ void handleEvent(pid_t pid, int status) {
     ptrace(PTRACE_CONT, pid, nullptr, reinterpret_cast<void*>(sig));
 }
 
+// Companion process loop, run in a child forked from this daemon. The child
+// dlopens the module library and drives its zn_companion_module callbacks
+// (onCompanionLoaded + onModuleConnected). Running the companion from the
+// daemon — instead of from the target process — puts it in the daemon's
+// privileged SELinux domain, mirroring ZygiskNext's `zn-companion64`. Modules
+// such as LSPosed need this: their companion connects to privileged daemons
+// (the lspd "lspbridge" socket), which is how LSPosed detects the "Zygisk
+// Next monitor".
+[[noreturn]] void runCompanionProcess(const char* lib_path, int ctl_fd) {
+    // The daemon is identified by its comm ("injector") in /proc scans
+    // (findInjectorPid); give the companion child its own name so it is never
+    // mistaken for the daemon (e.g. a `--ctl rescan` would otherwise SIGHUP
+    // and kill it).
+    prctl(PR_SET_NAME, "znn-companion", 0, 0, 0);
+
+    void* lib = dlopen(lib_path, RTLD_NOW);
+    if (!lib) {
+        // bionic's default linker namespace may reject /data paths; fall back
+        // to loading through a memfd, like the loader does for target
+        // processes (dlopenViaFd in loader.cpp).
+        std::vector<uint8_t> bytes;
+        if (readFile(lib_path, bytes)) {
+            const int memfd = static_cast<int>(
+                syscall(SYS_memfd_create, "znn-companion", MFD_CLOEXEC));
+            if (memfd >= 0) {
+                size_t off = 0;
+                while (off < bytes.size()) {
+                    const ssize_t n = write(memfd, bytes.data() + off, bytes.size() - off);
+                    if (n <= 0) break;
+                    off += static_cast<size_t>(n);
+                }
+                if (off == bytes.size()) {
+                    android_dlextinfo ext = {};
+                    ext.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+                    ext.library_fd = memfd;
+                    lib = android_dlopen_ext(lib_path, RTLD_NOW, &ext);
+                }
+            }
+        }
+    }
+    if (!lib) {
+        LOGE("companion: dlopen %s failed: %s", lib_path, dlerror());
+        _exit(1);
+    }
+    auto* m = reinterpret_cast<ZygiskNextCompanionModule*>(dlsym(lib, "zn_companion_module"));
+    if (!m || !m->onCompanionLoaded || !m->onModuleConnected) {
+        LOGE("companion: %s does not export zn_companion_module", lib_path);
+        _exit(1);
+    }
+    LOGI("companion: serving %s", lib_path);
+    m->onCompanionLoaded();
+    for (;;) {
+        char cmd = 0;
+        int fd = -1;
+        struct iovec iov = {&cmd, sizeof(cmd)};
+        char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+        struct msghdr msg = {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = sizeof(cmsg_buf);
+
+        ssize_t n = recvmsg(ctl_fd, &msg, 0);
+        if (n <= 0) break;
+
+        if (cmd != 1) continue;  // kCmdConnect, see loader.cpp
+
+        for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
+                break;
+            }
+        }
+        if (fd >= 0) {
+            m->onModuleConnected(fd);  // module owns and closes fd
+            fd = -1;
+        }
+    }
+    _exit(0);
+}
+
+// Handle one companion-spawn request from a loader running in a target
+// process: read the module library path, fork the companion, and hand the
+// control socket back to the loader over `client`.
+void handleCompanionRequest(int client) {
+    auto readAll = [&](void* buf, size_t len) {
+        auto* p = static_cast<char*>(buf);
+        size_t off = 0;
+        while (off < len) {
+            const ssize_t n = read(client, p + off, len - off);
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    };
+
+    uint32_t magic = 0, plen = 0;
+    if (!readAll(&magic, sizeof(magic)) || !readAll(&plen, sizeof(plen)) ||
+        magic != kCompanionReqMagic || plen == 0 || plen > 4096) {
+        close(client);
+        return;
+    }
+    std::string lib_path(plen, '\0');
+    if (!readAll(&lib_path[0], plen) || lib_path[plen - 1] != '\0') {
+        close(client);
+        return;
+    }
+    lib_path.resize(plen - 1);
+
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
+        close(client);
+        return;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(client);
+        close(sv[0]);
+        runCompanionProcess(lib_path.c_str(), sv[1]);
+        _exit(0);
+    }
+    close(sv[1]);
+    if (pid > 0) {
+        // Send the control socket back to the loader (SCM_RIGHTS).
+        struct iovec iov = {&magic, sizeof(magic)};
+        char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+        struct msghdr msg = {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = sizeof(cmsg_buf);
+        struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &sv[0], sizeof(int));
+        msg.msg_controllen = cmsg->cmsg_len;
+        sendmsg(client, &msg, 0);
+        LOGI("companion spawned for %s (pid %d)", lib_path.c_str(), pid);
+    }
+    close(sv[0]);
+    close(client);
+}
+
+// Create the companion-spawn control socket. Returns the listening fd, or -1.
+int createCompanionSocket() {
+    unlink(kCompanionSock);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, kCompanionSock, sizeof(addr.sun_path));
+    if (bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0 ||
+        listen(fd, 8) != 0) {
+        LOGE("cannot create companion socket %s: %s", kCompanionSock, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    // World-writable so target processes can connect; SELinux still gates the
+    // access (see module/src/sepolicy.rule).
+    chmod(kCompanionSock, 0666);
+    LOGI("companion socket ready at %s", kCompanionSock);
+    return fd;
+}
+
+// Drain pending companion-spawn requests (non-blocking).
+void acceptCompanionRequests(int listen_fd) {
+    if (listen_fd < 0) return;
+    for (;;) {
+        int c = accept(listen_fd, nullptr, nullptr);
+        if (c < 0) break;  // EAGAIN when idle
+        handleCompanionRequest(c);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2006,6 +2200,9 @@ int main(int argc, char** argv) {
     collectTargets();
     LOGI("collected %zu zn modules", g_targets.size());
 
+    // Companion-spawn control socket (see kCompanionSock / runCompanionProcess).
+    const int companion_listen_fd = createCompanionSocket();
+
     // Choose the mode automatically. Classic (trace init) is deterministic but
     // incompatible with Zygisk implementations, which hold pid 1 for their
     // whole session (Linux permits only one tracer per process). If a Zygisk
@@ -2043,6 +2240,10 @@ int main(int argc, char** argv) {
             g_state_dirty = true;
             LOGI("rescanned znn targets (%zu)", g_targets.size());
         }
+
+        // Loaders inside target processes ask us to spawn their module
+        // companions (privileged); service those requests promptly.
+        acceptCompanionRequests(companion_listen_fd);
 
         if (g_mode == 1) {
             // Compat mode: poll every ~2 ms for newly spawned targets.
