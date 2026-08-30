@@ -18,25 +18,33 @@
  */
 
 #include "utils/elf_util.h"
+#include "include/zygisk_next_api.h"
 
+#include <android/dlext.h>
 #include <android/log.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/memfd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/ptrace.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/xattr.h>
 #include <sys/system_properties.h>
 #include <time.h>
@@ -103,6 +111,11 @@ struct ModuleInfo {
 constexpr const char* kStateDir = "/data/adb/zygisknextsu";
 constexpr const char* kStateFile = "/data/adb/zygisknextsu/znn_state.json";
 constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
+
+constexpr const char* kCompanionSock = "/data/adb/zygisknextsu/companion.sock";
+constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
+constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
+constexpr uint32_t kCompanionCmdModules = 2;  // list modules for a process
 
 // Root implementation versions, collected once at startup.
 struct RootImplInfo {
@@ -1488,10 +1501,11 @@ void handleTrap(pid_t pid, Tracee& t) {
         LOGE("dlopen(%s) failed for pid %d: %s", t.loader.c_str(), pid, err.c_str());
         recordFailure(pid, t.exe, "dlopen failed: " + err);
         if (err.find("Permission denied") != std::string::npos) {
-            LOGE("hint for pid %d: the memfd is labeled \"tmpfs\" (GKI) or \"unlabeled\" "
-                 "(other kernels) and the target domain cannot access it - make sure "
-                 "sepolicy.rule is applied (allow * tmpfs/unlabeled file open read "
-                 "getattr map execute)", pid);
+            LOGE("hint for pid %d: dlopen needs the `execute` permission on the "
+                 "memfd's SELinux label (\"tmpfs\", \"unlabeled\", or the target's "
+                 "own <domain>_tmpfs, e.g. artd_tmpfs). Make sure the module "
+                 "sepolicy.rule is applied; Zygisk Next Next ships "
+                 "`allow * * file execute` to cover every label.", pid);
         } else if (err.find("not accessible") != std::string::npos) {
             LOGE("hint for pid %d: the linker rejected the library path for its "
                  "namespace (loading must go through a tmpfs memfd)", pid);
@@ -1603,13 +1617,22 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     }
 
     uintptr_t base = 0;
+    bool has_loader = false;
     for (const auto& m : parseMaps(std::to_string(pid))) {
         if (m.offset == 0 && m.path == exe) {
             base = m.start;
-            break;
+        }
+        if (m.path.find("libloader.so") != std::string::npos ||
+            m.path.find("memfd:loader") != std::string::npos) {
+            has_loader = true;
         }
     }
     if (!base) {
+        return SeizeResult::kGiveUp;
+    }
+    if (has_loader) {
+        LOGW("%s (pid %d) already carries the ZNN loader (fork of an injected "
+             "process); skipping", exe.c_str(), pid);
         return SeizeResult::kGiveUp;
     }
     bool thumb = false;
@@ -1930,6 +1953,347 @@ void handleEvent(pid_t pid, int status) {
     ptrace(PTRACE_CONT, pid, nullptr, reinterpret_cast<void*>(sig));
 }
 
+// Companion process loop, run in a child forked from this daemon.
+[[noreturn]] void runCompanionProcess(const char* lib_path, int ctl_fd) {
+    prctl(PR_SET_NAME, "znn-companion", 0, 0, 0);
+
+    void* lib = dlopen(lib_path, RTLD_NOW);
+    if (!lib) {
+        // bionic's default linker namespace may reject /data paths; fall back
+        // to loading through a memfd, like the loader does for target
+        // processes.
+        std::vector<uint8_t> bytes;
+        if (readFile(lib_path, bytes)) {
+            const int memfd = static_cast<int>(
+                syscall(SYS_memfd_create, "znn-companion", MFD_CLOEXEC));
+            if (memfd >= 0) {
+                size_t off = 0;
+                while (off < bytes.size()) {
+                    const ssize_t n = write(memfd, bytes.data() + off, bytes.size() - off);
+                    if (n <= 0) break;
+                    off += static_cast<size_t>(n);
+                }
+                if (off == bytes.size()) {
+                    android_dlextinfo ext = {};
+                    ext.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+                    ext.library_fd = memfd;
+                    lib = android_dlopen_ext(lib_path, RTLD_NOW, &ext);
+                }
+            }
+        }
+    }
+    if (!lib) {
+        LOGE("companion: dlopen %s failed: %s", lib_path, dlerror());
+        _exit(1);
+    }
+    auto* m = reinterpret_cast<ZygiskNextCompanionModule*>(dlsym(lib, "zn_companion_module"));
+    if (!m || !m->onCompanionLoaded || !m->onModuleConnected) {
+        LOGE("companion: %s does not export zn_companion_module", lib_path);
+        _exit(1);
+    }
+    LOGI("companion: serving %s", lib_path);
+    m->onCompanionLoaded();
+    for (;;) {
+        char cmd = 0;
+        int fd = -1;
+        struct iovec iov = {&cmd, sizeof(cmd)};
+        char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+        struct msghdr msg = {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = sizeof(cmsg_buf);
+
+        ssize_t n = recvmsg(ctl_fd, &msg, 0);
+        if (n <= 0) break;
+
+        if (cmd != 1) continue;  // kCmdConnect
+
+        for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
+                break;
+            }
+        }
+        if (fd >= 0) {
+            m->onModuleConnected(fd);
+            fd = -1;
+        }
+    }
+    _exit(0);
+}
+
+static bool resolveModuleLib(const std::string& moddir, const std::string& lib,
+                             std::string& out) {
+    std::string candidate = lib;
+    if (candidate.empty() || candidate[0] != '/') candidate = moddir + "/" + candidate;
+    char real[PATH_MAX];
+    if (!realpath(candidate.c_str(), real)) return false;
+    out = real;
+    return true;
+}
+
+// Copy a file into a fresh memfd. Returns the memfd or -1.
+static int memfdFromFile(const std::string& path) {
+    int f = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (f < 0) return -1;
+    struct stat st;
+    if (fstat(f, &st) != 0 || st.st_size <= 0) {
+        close(f);
+        return -1;
+    }
+    const size_t size = static_cast<size_t>(st.st_size);
+    auto* buf = static_cast<uint8_t*>(malloc(size));
+    if (!buf) {
+        close(f);
+        return -1;
+    }
+    size_t off = 0;
+    while (off < size) {
+        const ssize_t n = read(f, buf + off, size - off);
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    close(f);
+    if (off != size) {
+        free(buf);
+        return -1;
+    }
+    const int memfd = static_cast<int>(syscall(SYS_memfd_create, "znn-module", MFD_CLOEXEC));
+    if (memfd < 0) {
+        free(buf);
+        return -1;
+    }
+    off = 0;
+    while (off < size) {
+        const ssize_t n = write(memfd, buf + off, size - off);
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    free(buf);
+    if (off != size) {
+        close(memfd);
+        return -1;
+    }
+    return memfd;
+}
+
+void sendModuleRecord(int client, const std::string& lib_path, bool companion, int mfd) {
+    uint32_t plen = static_cast<uint32_t>(lib_path.size() + 1);
+    uint32_t comp = companion ? 1 : 0;
+    struct iovec iovs[3] = {
+        {&plen, sizeof(plen)},
+        {const_cast<char*>(lib_path.data()), lib_path.size() + 1},
+        {&comp, sizeof(comp)},
+    };
+    struct msghdr msg = {};
+    msg.msg_iov = iovs;
+    msg.msg_iovlen = 3;
+    char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+    if (mfd >= 0) {
+        auto* cmsg = reinterpret_cast<struct cmsghdr*>(cmsg_buf);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &mfd, sizeof(int));
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = cmsg->cmsg_len;
+    }
+    sendmsg(client, &msg, 0);
+}
+
+// Answer a "list modules" request.
+void sendModulesForProcess(int client, const std::string& process_name,
+                           const std::string& process_path) {
+    DIR* d = opendir("/data/adb/modules");
+    if (d) {
+        struct dirent* de;
+        while ((de = readdir(d))) {
+            if (de->d_name[0] == '.') continue;
+            const std::string moddir = std::string("/data/adb/modules/") + de->d_name;
+            if (access((moddir + "/disable").c_str(), F_OK) == 0) continue;
+            if (access((moddir + "/remove").c_str(), F_OK) == 0) continue;
+
+            const std::string znfile = moddir + "/zn_modules.txt";
+            FILE* f = fopen(znfile.c_str(), "re");
+            if (!f) continue;
+
+            char* line = nullptr;
+            size_t cap = 0;
+            while (getline(&line, &cap, f) > 0) {
+                std::string l = line;
+                std::vector<std::string> toks;
+                size_t i = 0;
+                while (i < l.size()) {
+                    while (i < l.size() && isspace(static_cast<unsigned char>(l[i]))) ++i;
+                    size_t j = i;
+                    while (j < l.size() && !isspace(static_cast<unsigned char>(l[j]))) ++j;
+                    if (j > i) toks.push_back(l.substr(i, j - i));
+                    i = j;
+                }
+                if (toks.size() < 2) continue;
+
+                bool is_name = false;
+                std::string target;
+                if (toks[0].rfind("path=", 0) == 0) {
+                    target = toks[0].substr(5);
+                } else if (toks[0].rfind("name=", 0) == 0) {
+                    is_name = true;
+                    target = toks[0].substr(5);
+                } else {
+                    continue;
+                }
+                if (is_name ? (target != process_name) : (target != process_path)) continue;
+
+                bool companion = false;
+                for (size_t k = 1; k + 1 < toks.size(); ++k) {
+                    if (toks[k] == "companion") companion = true;
+                }
+                const std::string lib = toks.back();
+
+                std::string real;
+                if (!resolveModuleLib(moddir, lib, real)) continue;
+                const int mfd = memfdFromFile(real);
+                sendModuleRecord(client, real, companion, mfd);
+                if (mfd >= 0) close(mfd);
+            }
+            free(line);
+            fclose(f);
+        }
+        closedir(d);
+    }
+    const uint32_t zero = 0;
+    write(client, &zero, sizeof(zero));
+}
+
+void handleCompanionRequest(int client) {
+    auto readAll = [&](void* buf, size_t len) {
+        auto* p = static_cast<char*>(buf);
+        size_t off = 0;
+        while (off < len) {
+            const ssize_t n = read(client, p + off, len - off);
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    };
+
+    uint32_t magic = 0, cmd = 0;
+    if (!readAll(&magic, sizeof(magic)) || !readAll(&cmd, sizeof(cmd)) ||
+        magic != kCompanionReqMagic) {
+        close(client);
+        return;
+    }
+
+    if (cmd == kCompanionCmdModules) {
+        uint32_t nlen = 0, plen = 0;
+        if (!readAll(&nlen, sizeof(nlen)) || nlen == 0 || nlen > 4096) {
+            close(client);
+            return;
+        }
+        std::string name(nlen, '\0');
+        if (!readAll(&name[0], nlen) || name[nlen - 1] != '\0') {
+            close(client);
+            return;
+        }
+        name.resize(nlen - 1);
+        if (!readAll(&plen, sizeof(plen)) || plen == 0 || plen > 4096) {
+            close(client);
+            return;
+        }
+        std::string path(plen, '\0');
+        if (!readAll(&path[0], plen) || path[plen - 1] != '\0') {
+            close(client);
+            return;
+        }
+        path.resize(plen - 1);
+        sendModulesForProcess(client, name, path);
+        close(client);
+        return;
+    }
+
+    if (cmd != kCompanionCmdSpawn) {
+        close(client);
+        return;
+    }
+
+    uint32_t plen = 0;
+    if (!readAll(&plen, sizeof(plen)) || plen == 0 || plen > 4096) {
+        close(client);
+        return;
+    }
+    std::string lib_path(plen, '\0');
+    if (!readAll(&lib_path[0], plen) || lib_path[plen - 1] != '\0') {
+        close(client);
+        return;
+    }
+    lib_path.resize(plen - 1);
+
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
+        close(client);
+        return;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(client);
+        close(sv[0]);
+        runCompanionProcess(lib_path.c_str(), sv[1]);
+        _exit(0);
+    }
+    close(sv[1]);
+    if (pid > 0) {
+        // Send the control socket back to the loader.
+        struct iovec iov = {&magic, sizeof(magic)};
+        char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+        struct msghdr msg = {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = sizeof(cmsg_buf);
+        struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &sv[0], sizeof(int));
+        msg.msg_controllen = cmsg->cmsg_len;
+        sendmsg(client, &msg, 0);
+        LOGI("companion spawned for %s (pid %d)", lib_path.c_str(), pid);
+    }
+    close(sv[0]);
+    close(client);
+}
+
+int createCompanionSocket() {
+    unlink(kCompanionSock);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, kCompanionSock, sizeof(addr.sun_path));
+    if (bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0 ||
+        listen(fd, 8) != 0) {
+        LOGE("cannot create companion socket %s: %s", kCompanionSock, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    // World-writable so target processes can connect; SELinux still gates the access.
+    chmod(kCompanionSock, 0666);
+    LOGI("companion socket ready at %s", kCompanionSock);
+    return fd;
+}
+
+// Drain pending companion-spawn requests.
+void acceptCompanionRequests(int listen_fd) {
+    if (listen_fd < 0) return;
+    for (;;) {
+        int c = accept(listen_fd, nullptr, nullptr);
+        if (c < 0) break;  // EAGAIN when idle
+        handleCompanionRequest(c);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1964,9 +2328,9 @@ int main(int argc, char** argv) {
 
     LOGI("Zygisk Next Next %s starting", ZNN_VERSION);
 
-    // Diagnostics: are the loaders present and what labels do they carry?
-    // (The label decides which SELinux rules the target needs for its own
-    // module reads; the memfd injection itself only needs the "unlabeled" rule.)
+    // The label decides which SELinux rules the target needs for its own
+    // module reads; the memfd dlopen itself needs `execute` on the memfd's
+    // label.
     for (const char* p : {g_loader64.c_str(), g_loader32.c_str()}) {
         char ctx[256];
         ssize_t n = lgetxattr(p, "security.selinux", ctx, sizeof(ctx) - 1);
@@ -1984,6 +2348,8 @@ int main(int argc, char** argv) {
     collectSystemInfo();
     collectTargets();
     LOGI("collected %zu zn modules", g_targets.size());
+
+    const int companion_listen_fd = createCompanionSocket();
 
     // Choose the mode automatically. Classic (trace init) is deterministic but
     // incompatible with Zygisk implementations, which hold pid 1 for their
@@ -2022,6 +2388,10 @@ int main(int argc, char** argv) {
             g_state_dirty = true;
             LOGI("rescanned znn targets (%zu)", g_targets.size());
         }
+
+        // Loaders inside target processes ask us to spawn their module
+        // companions (privileged); service those requests promptly.
+        acceptCompanionRequests(companion_listen_fd);
 
         if (g_mode == 1) {
             // Compat mode: poll every ~2 ms for newly spawned targets.

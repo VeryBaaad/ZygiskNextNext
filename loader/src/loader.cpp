@@ -40,6 +40,7 @@
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <mutex>
@@ -128,6 +129,11 @@ struct ModuleHandle {
 namespace {
 
 constexpr char kCmdConnect = 1;
+
+constexpr char kCompanionSock[] = "/data/adb/zygisknextsu/companion.sock";
+constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
+constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
+constexpr uint32_t kCompanionCmdModules = 2;  // list modules matching this process
 
 std::mutex g_hook_mutex;
 std::set<uintptr_t> g_hooked;  // addresses currently inline-hooked
@@ -548,6 +554,173 @@ const ZygiskNextAPI kApiNoSymbolResolver = {
 
 // Companion process
 
+static int requestDaemonCompanion(const std::string& lib_path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, kCompanionSock, sizeof(addr.sun_path));
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    struct timeval tv {};
+    tv.tv_sec = 5;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // Request frame: magic u32 | cmd u32 | path length u32 (incl. NUL) | path bytes.
+    const uint32_t magic = kCompanionReqMagic;
+    const uint32_t cmd = kCompanionCmdSpawn;
+    const uint32_t plen = static_cast<uint32_t>(lib_path.size() + 1);
+    auto writeAll = [&](const void* buf, size_t len) {
+        const auto* p = static_cast<const char*>(buf);
+        size_t off = 0;
+        while (off < len) {
+            const ssize_t n = write(fd, p + off, len - off);
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    };
+    if (!writeAll(&magic, sizeof(magic)) || !writeAll(&cmd, sizeof(cmd)) ||
+        !writeAll(&plen, sizeof(plen)) || !writeAll(lib_path.c_str(), plen)) {
+        close(fd);
+        return -1;
+    }
+
+    // Receive the control socket; the received byte is dropped
+    uint32_t ack = 0;
+    struct iovec iov {&ack, sizeof(ack)};
+    char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+    struct msghdr msg {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsg_buf;
+    msg.msg_controllen = sizeof(cmsg_buf);
+
+    ssize_t n = recvmsg(fd, &msg, 0);
+    int cfd = -1;
+    if (n >= 0) {
+        for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                memcpy(&cfd, CMSG_DATA(cmsg), sizeof(int));
+                break;
+            }
+        }
+    }
+    close(fd);
+    return cfd;
+}
+
+static void* dlopenFromFd(int fd, const char* name, int flags) {
+    android_dlextinfo ext = {};
+    ext.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+    ext.library_fd = fd;
+    return android_dlopen_ext(name, flags, &ext);
+}
+
+// Read exactly `len` bytes from `fd` via recvmsg.
+static bool recvFull(int fd, void* buf, size_t len, int* out_fd) {
+    auto* p = static_cast<char*>(buf);
+    size_t off = 0;
+    while (off < len) {
+        char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+        struct iovec iov {p + off, len - off};
+        struct msghdr msg {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        if (out_fd) {
+            msg.msg_control = cmsg_buf;
+            msg.msg_controllen = sizeof(cmsg_buf);
+        }
+        ssize_t n = recvmsg(fd, &msg, 0);
+        if (n <= 0) return false;
+        if (out_fd) {
+            for (struct cmsghdr* c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+                    memcpy(out_fd, CMSG_DATA(c), sizeof(int));
+                    break;
+                }
+            }
+            out_fd = nullptr;
+        }
+        off += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+struct DaemonModule {
+    std::string lib_path;
+    bool companion = false;
+    int fd = -1;
+};
+
+static bool requestModulesFromDaemon(const std::string& process_name,
+                                     const std::string& process_path,
+                                     std::vector<DaemonModule>& out) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, kCompanionSock, sizeof(addr.sun_path));
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        return false;
+    }
+    struct timeval tv {};
+    tv.tv_sec = 5;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    const uint32_t magic = kCompanionReqMagic;
+    const uint32_t cmd = kCompanionCmdModules;
+    const uint32_t nlen = static_cast<uint32_t>(process_name.size() + 1);
+    const uint32_t plen = static_cast<uint32_t>(process_path.size() + 1);
+    auto writeAll = [&](const void* buf, size_t len) {
+        const auto* p = static_cast<const char*>(buf);
+        size_t off = 0;
+        while (off < len) {
+            const ssize_t n = write(fd, p + off, len - off);
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    };
+    if (!writeAll(&magic, sizeof(magic)) || !writeAll(&cmd, sizeof(cmd)) ||
+        !writeAll(&nlen, sizeof(nlen)) || !writeAll(process_name.c_str(), nlen) ||
+        !writeAll(&plen, sizeof(plen)) || !writeAll(process_path.c_str(), plen)) {
+        close(fd);
+        return false;
+    }
+
+    for (;;) {
+        uint32_t rlen = 0;
+        int mfd = -1;
+        if (!recvFull(fd, &rlen, sizeof(rlen), &mfd)) {
+            close(fd);
+            return false;
+        }
+        if (rlen == 0) break;
+        if (rlen > 4096) {
+            close(fd);
+            return false;
+        }
+        std::string lib(rlen, '\0');
+        uint32_t comp = 0;
+        if (!recvFull(fd, &lib[0], rlen, nullptr) ||
+            !recvFull(fd, &comp, sizeof(comp), nullptr) || lib[rlen - 1] != '\0' || mfd < 0) {
+            close(fd);
+            return false;
+        }
+        lib.resize(rlen - 1);
+        out.push_back({std::move(lib), comp != 0, mfd});
+    }
+    close(fd);
+    return true;
+}
+
 [[noreturn]] void companionMain(const char* lib_path, int ctl_fd) {
     void* lib = dlopenViaFd(lib_path, RTLD_NOW);
     if (!lib) {
@@ -688,14 +861,18 @@ bool resolveLibPath(const ModuleEntry& e, std::string& out) {
     return true;
 }
 
-void loadEntry(const ModuleEntry& e) {
+void loadEntry(const ModuleEntry& e, int module_fd = -1) {
     std::string lib_path;
-    if (!resolveLibPath(e, lib_path)) {
+    if (module_fd >= 0) {
+        // Provided by the root daemon: lib_path is already the resolved path.
+        lib_path = e.lib;
+    } else if (!resolveLibPath(e, lib_path)) {
         LOGE("module lib path %s is not inside module dir, skipping", e.lib.c_str());
         return;
     }
 
-    void* lib = dlopenViaFd(lib_path.c_str(), RTLD_NOW);
+    void* lib = module_fd >= 0 ? dlopenFromFd(module_fd, lib_path.c_str(), RTLD_NOW)
+                               : dlopenViaFd(lib_path.c_str(), RTLD_NOW);
     if (!lib) {
         LOGE("dlopen %s failed: %s", lib_path.c_str(), dlerror());
         return;
@@ -722,20 +899,27 @@ void loadEntry(const ModuleEntry& e) {
     // the companion would only waste a process. This gate is independent of the
     // `companion` flag in zn_modules.txt, which merely requests the companion.
     if (e.companion && m->target_api_version >= 3) {
-        int sv[2];
-        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                close(sv[0]);
-                companionMain(lib_path.c_str(), sv[1]);
-                _exit(0);
-            } else if (pid > 0) {
-                close(sv[1]);
-                handle->companion_fd = sv[0];
-                handle->companion_pid = pid;
-            } else {
-                close(sv[0]);
-                close(sv[1]);
+        int cfd = requestDaemonCompanion(lib_path);
+        if (cfd >= 0) {
+            LOGI("companion for %s spawned by injector daemon (fd %d)", lib_path.c_str(), cfd);
+            handle->companion_fd = cfd;
+            handle->companion_pid = -1;
+        } else {
+            int sv[2];
+            if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0) {
+                pid_t pid = fork();
+                if (pid == 0) {
+                    close(sv[0]);
+                    companionMain(lib_path.c_str(), sv[1]);
+                    _exit(0);
+                } else if (pid > 0) {
+                    close(sv[1]);
+                    handle->companion_fd = sv[0];
+                    handle->companion_pid = pid;
+                } else {
+                    close(sv[0]);
+                    close(sv[1]);
+                }
             }
         }
     } else if (e.companion) {
@@ -764,6 +948,24 @@ void loadEntry(const ModuleEntry& e) {
 }
 
 void loadAllModules() {
+    std::vector<DaemonModule> mods;
+    if (requestModulesFromDaemon(getProcessName(), getProcessPath(), mods)) {
+        LOGI("loadAllModules: got %zu module(s) from injector daemon", mods.size());
+        for (auto& m : mods) {
+            ModuleEntry e;
+            e.is_name = true;
+            e.target = getProcessName();
+            e.companion = m.companion;
+            e.lib = m.lib_path;
+            e.module_dir.clear();
+            loadEntry(e, m.fd);
+            if (m.fd >= 0) close(m.fd);
+        }
+        return;
+    }
+    LOGW("loadAllModules: daemon unavailable, falling back to direct /data/adb/modules read");
+
+    // Fallback for root targets (netd, adbd): read /data/adb/modules directly.
     DIR* d = opendir("/data/adb/modules");
     if (!d) {
         LOGW("cannot open /data/adb/modules: %s", strerror(errno));
