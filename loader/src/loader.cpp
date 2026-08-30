@@ -140,6 +140,9 @@ constexpr char kCmdConnect = 1;
 // privileged companion process.
 constexpr char kCompanionSock[] = "/data/adb/zygisknextsu/companion.sock";
 constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
+// Commands sent over the companion socket (see injector.cpp handleCompanionRequest).
+constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
+constexpr uint32_t kCompanionCmdModules = 2;  // list modules matching this process
 
 std::mutex g_hook_mutex;
 std::set<uintptr_t> g_hooked;  // addresses currently inline-hooked
@@ -584,8 +587,9 @@ static int requestDaemonCompanion(const std::string& lib_path) {
     tv.tv_sec = 5;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    // Request frame: magic u32 | path length u32 (incl. NUL) | path bytes.
+    // Request frame: magic u32 | cmd u32 | path length u32 (incl. NUL) | path bytes.
     const uint32_t magic = kCompanionReqMagic;
+    const uint32_t cmd = kCompanionCmdSpawn;
     const uint32_t plen = static_cast<uint32_t>(lib_path.size() + 1);
     auto writeAll = [&](const void* buf, size_t len) {
         const auto* p = static_cast<const char*>(buf);
@@ -597,8 +601,8 @@ static int requestDaemonCompanion(const std::string& lib_path) {
         }
         return true;
     };
-    if (!writeAll(&magic, sizeof(magic)) || !writeAll(&plen, sizeof(plen)) ||
-        !writeAll(lib_path.c_str(), plen)) {
+    if (!writeAll(&magic, sizeof(magic)) || !writeAll(&cmd, sizeof(cmd)) ||
+        !writeAll(&plen, sizeof(plen)) || !writeAll(lib_path.c_str(), plen)) {
         close(fd);
         return -1;
     }
@@ -626,6 +630,128 @@ static int requestDaemonCompanion(const std::string& lib_path) {
     }
     close(fd);
     return cfd;
+}
+
+// dlopen a library from a file descriptor (a memfd received from the injector
+// daemon). bionic's namespace "permitted path" check is bypassed for a tmpfs
+// fd, and — crucially — the loader does not need to open /data/adb/modules
+// itself, which non-root targets (e.g. artd, uid 1082) cannot read. The fd is
+// deliberately left open: bionic does not own USE_LIBRARY_FD fds.
+static void* dlopenFromFd(int fd, const char* name, int flags) {
+    android_dlextinfo ext = {};
+    ext.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+    ext.library_fd = fd;
+    return android_dlopen_ext(name, flags, &ext);
+}
+
+// Read exactly `len` bytes from `fd` via recvmsg. When `out_fd` is non-null,
+// capture the first SCM_RIGHTS fd delivered (a module record's memfd) and then
+// stop capturing. Returns true on success.
+static bool recvFull(int fd, void* buf, size_t len, int* out_fd) {
+    auto* p = static_cast<char*>(buf);
+    size_t off = 0;
+    while (off < len) {
+        char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+        struct iovec iov {p + off, len - off};
+        struct msghdr msg {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        if (out_fd) {
+            msg.msg_control = cmsg_buf;
+            msg.msg_controllen = sizeof(cmsg_buf);
+        }
+        ssize_t n = recvmsg(fd, &msg, 0);
+        if (n <= 0) return false;
+        if (out_fd) {
+            for (struct cmsghdr* c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+                    memcpy(out_fd, CMSG_DATA(c), sizeof(int));
+                    break;
+                }
+            }
+            out_fd = nullptr;
+        }
+        off += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+// One module the daemon resolved for the current process. `fd` is a memfd
+// holding the module library, handed over by the root injector daemon so the
+// loader never has to read /data/adb/modules itself.
+struct DaemonModule {
+    std::string lib_path;
+    bool companion = false;
+    int fd = -1;
+};
+
+// Ask the injector daemon (root) for the modules that apply to the current
+// process. The daemon reads every module's zn_modules.txt, matches against
+// `process_name`/`process_path`, memfd's each matching library and streams the
+// records (lib path, companion flag, memfd fd) back over SCM_RIGHTS. Returns
+// true on success (empty vector is a valid result).
+static bool requestModulesFromDaemon(const std::string& process_name,
+                                     const std::string& process_path,
+                                     std::vector<DaemonModule>& out) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, kCompanionSock, sizeof(addr.sun_path));
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        return false;
+    }
+    struct timeval tv {};
+    tv.tv_sec = 5;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    const uint32_t magic = kCompanionReqMagic;
+    const uint32_t cmd = kCompanionCmdModules;
+    const uint32_t nlen = static_cast<uint32_t>(process_name.size() + 1);
+    const uint32_t plen = static_cast<uint32_t>(process_path.size() + 1);
+    auto writeAll = [&](const void* buf, size_t len) {
+        const auto* p = static_cast<const char*>(buf);
+        size_t off = 0;
+        while (off < len) {
+            const ssize_t n = write(fd, p + off, len - off);
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    };
+    if (!writeAll(&magic, sizeof(magic)) || !writeAll(&cmd, sizeof(cmd)) ||
+        !writeAll(&nlen, sizeof(nlen)) || !writeAll(process_name.c_str(), nlen) ||
+        !writeAll(&plen, sizeof(plen)) || !writeAll(process_path.c_str(), plen)) {
+        close(fd);
+        return false;
+    }
+
+    for (;;) {
+        uint32_t rlen = 0;
+        int mfd = -1;
+        if (!recvFull(fd, &rlen, sizeof(rlen), &mfd)) {
+            close(fd);
+            return false;
+        }
+        if (rlen == 0) break;  // terminator
+        if (rlen > 4096) {
+            close(fd);
+            return false;
+        }
+        std::string lib(rlen, '\0');
+        uint32_t comp = 0;
+        if (!recvFull(fd, &lib[0], rlen, nullptr) ||
+            !recvFull(fd, &comp, sizeof(comp), nullptr) || lib[rlen - 1] != '\0' || mfd < 0) {
+            close(fd);
+            return false;
+        }
+        lib.resize(rlen - 1);
+        out.push_back({std::move(lib), comp != 0, mfd});
+    }
+    close(fd);
+    return true;
 }
 
 [[noreturn]] void companionMain(const char* lib_path, int ctl_fd) {
@@ -768,14 +894,20 @@ bool resolveLibPath(const ModuleEntry& e, std::string& out) {
     return true;
 }
 
-void loadEntry(const ModuleEntry& e) {
+void loadEntry(const ModuleEntry& e, int module_fd = -1) {
     std::string lib_path;
-    if (!resolveLibPath(e, lib_path)) {
+    if (module_fd >= 0) {
+        // Provided by the root daemon: lib_path is already the resolved path,
+        // and the module library is handed over as a memfd so the loader does
+        // not have to read /data/adb/modules (non-root targets cannot).
+        lib_path = e.lib;
+    } else if (!resolveLibPath(e, lib_path)) {
         LOGE("module lib path %s is not inside module dir, skipping", e.lib.c_str());
         return;
     }
 
-    void* lib = dlopenViaFd(lib_path.c_str(), RTLD_NOW);
+    void* lib = module_fd >= 0 ? dlopenFromFd(module_fd, lib_path.c_str(), RTLD_NOW)
+                               : dlopenViaFd(lib_path.c_str(), RTLD_NOW);
     if (!lib) {
         LOGE("dlopen %s failed: %s", lib_path.c_str(), dlerror());
         return;
@@ -861,9 +993,30 @@ void loadEntry(const ModuleEntry& e) {
 }
 
 void loadAllModules() {
-    // Diagnostic: who is running the loader and can it see the module dir?
-    LOGI("loadAllModules in %s (uid=%d), scanning /data/adb/modules", getProcessPath().c_str(),
-         getuid());
+    // Preferred path: get the modules for this process from the root injector
+    // daemon. The daemon reads zn_modules.txt and memfd's each matching library
+    // as root, so the loader does not need to read /data/adb/modules — which
+    // non-root targets (artd, uid 1082) cannot due to DAC permissions. This
+    // also keeps module files unreadable to ordinary apps (no detection
+    // surface), unlike making the module tree world-readable.
+    std::vector<DaemonModule> mods;
+    if (requestModulesFromDaemon(getProcessName(), getProcessPath(), mods)) {
+        LOGI("loadAllModules: got %zu module(s) from injector daemon", mods.size());
+        for (auto& m : mods) {
+            ModuleEntry e;
+            e.is_name = true;
+            e.target = getProcessName();
+            e.companion = m.companion;
+            e.lib = m.lib_path;
+            e.module_dir.clear();
+            loadEntry(e, m.fd);
+            if (m.fd >= 0) close(m.fd);
+        }
+        return;
+    }
+    LOGW("loadAllModules: daemon unavailable, falling back to direct /data/adb/modules read");
+
+    // Fallback for root targets (netd, adbd): read /data/adb/modules directly.
     DIR* d = opendir("/data/adb/modules");
     if (!d) {
         LOGW("cannot open /data/adb/modules: %s", strerror(errno));
@@ -877,22 +1030,14 @@ void loadAllModules() {
         std::string dir = std::string("/data/adb/modules/") + de->d_name;
         if (access((dir + "/disable").c_str(), F_OK) == 0) continue;
         if (access((dir + "/remove").c_str(), F_OK) == 0) continue;
-        if (access((dir + "/zn_modules.txt").c_str(), R_OK) != 0) {
-            LOGI("loadAllModules: %s has no readable zn_modules.txt (%s), skipping",
-                 dir.c_str(), strerror(errno));
-            continue;
-        }
+        if (access((dir + "/zn_modules.txt").c_str(), R_OK) != 0) continue;
         moddirs.push_back(std::move(dir));
     }
     closedir(d);
-    LOGI("loadAllModules: %zu candidate module dir(s)", moddirs.size());
 
     for (const auto& moddir : moddirs) {
         for (auto& e : parseZnModulesFile(moddir, moddir + "/zn_modules.txt")) {
-            const bool m = matchEntry(e);
-            LOGI("loadAllModules: %s target=%s companion=%d lib=%s -> %s", moddir.c_str(),
-                 e.target.c_str(), e.companion ? 1 : 0, e.lib.c_str(), m ? "match" : "no match");
-            if (m) loadEntry(e);
+            if (matchEntry(e)) loadEntry(e);
         }
     }
 }

@@ -121,6 +121,9 @@ constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
 // monitor"). Mirrors the constants in loader.cpp.
 constexpr const char* kCompanionSock = "/data/adb/zygisknextsu/companion.sock";
 constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
+// Commands (see loader.cpp for the matching constants).
+constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
+constexpr uint32_t kCompanionCmdModules = 2;  // list modules for a process
 
 // Root implementation versions, collected once at startup.
 struct RootImplInfo {
@@ -2049,6 +2052,156 @@ void handleEvent(pid_t pid, int status) {
     _exit(0);
 }
 
+// Resolve a module library path relative to its module directory.
+static bool resolveModuleLib(const std::string& moddir, const std::string& lib,
+                             std::string& out) {
+    std::string candidate = lib;
+    if (candidate.empty() || candidate[0] != '/') candidate = moddir + "/" + candidate;
+    char real[PATH_MAX];
+    if (!realpath(candidate.c_str(), real)) return false;
+    out = real;
+    return true;
+}
+
+// Copy a file into a fresh memfd (the daemon runs as root, so it can read
+// /data/adb/modules even though non-root targets cannot). Returns the memfd or
+// -1.
+static int memfdFromFile(const std::string& path) {
+    int f = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (f < 0) return -1;
+    struct stat st;
+    if (fstat(f, &st) != 0 || st.st_size <= 0) {
+        close(f);
+        return -1;
+    }
+    const size_t size = static_cast<size_t>(st.st_size);
+    auto* buf = static_cast<uint8_t*>(malloc(size));
+    if (!buf) {
+        close(f);
+        return -1;
+    }
+    size_t off = 0;
+    while (off < size) {
+        const ssize_t n = read(f, buf + off, size - off);
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    close(f);
+    if (off != size) {
+        free(buf);
+        return -1;
+    }
+    const int memfd = static_cast<int>(syscall(SYS_memfd_create, "znn-module", MFD_CLOEXEC));
+    if (memfd < 0) {
+        free(buf);
+        return -1;
+    }
+    off = 0;
+    while (off < size) {
+        const ssize_t n = write(memfd, buf + off, size - off);
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    free(buf);
+    if (off != size) {
+        close(memfd);
+        return -1;
+    }
+    return memfd;
+}
+
+// Send one module record (lib path, companion flag, memfd fd) to the loader.
+void sendModuleRecord(int client, const std::string& lib_path, bool companion, int mfd) {
+    uint32_t plen = static_cast<uint32_t>(lib_path.size() + 1);
+    uint32_t comp = companion ? 1 : 0;
+    struct iovec iovs[3] = {
+        {&plen, sizeof(plen)},
+        {const_cast<char*>(lib_path.data()), lib_path.size() + 1},
+        {&comp, sizeof(comp)},
+    };
+    struct msghdr msg = {};
+    msg.msg_iov = iovs;
+    msg.msg_iovlen = 3;
+    char cmsg_buf[CMSG_SPACE(sizeof(int))] = {0};
+    if (mfd >= 0) {
+        auto* cmsg = reinterpret_cast<struct cmsghdr*>(cmsg_buf);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &mfd, sizeof(int));
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = cmsg->cmsg_len;
+    }
+    sendmsg(client, &msg, 0);
+}
+
+// Answer a "list modules" request: scan /data/adb/modules, parse every module's
+// zn_modules.txt, and stream back the records whose target matches the calling
+// process (name or path), memfd'ing each library as root. Terminates with a
+// zero-length lib path.
+void sendModulesForProcess(int client, const std::string& process_name,
+                           const std::string& process_path) {
+    DIR* d = opendir("/data/adb/modules");
+    if (d) {
+        struct dirent* de;
+        while ((de = readdir(d))) {
+            if (de->d_name[0] == '.') continue;
+            const std::string moddir = std::string("/data/adb/modules/") + de->d_name;
+            if (access((moddir + "/disable").c_str(), F_OK) == 0) continue;
+            if (access((moddir + "/remove").c_str(), F_OK) == 0) continue;
+
+            const std::string znfile = moddir + "/zn_modules.txt";
+            FILE* f = fopen(znfile.c_str(), "re");
+            if (!f) continue;
+
+            char* line = nullptr;
+            size_t cap = 0;
+            while (getline(&line, &cap, f) > 0) {
+                std::string l = line;
+                std::vector<std::string> toks;
+                size_t i = 0;
+                while (i < l.size()) {
+                    while (i < l.size() && isspace(static_cast<unsigned char>(l[i]))) ++i;
+                    size_t j = i;
+                    while (j < l.size() && !isspace(static_cast<unsigned char>(l[j]))) ++j;
+                    if (j > i) toks.push_back(l.substr(i, j - i));
+                    i = j;
+                }
+                if (toks.size() < 2) continue;
+
+                bool is_name = false;
+                std::string target;
+                if (toks[0].rfind("path=", 0) == 0) {
+                    target = toks[0].substr(5);
+                } else if (toks[0].rfind("name=", 0) == 0) {
+                    is_name = true;
+                    target = toks[0].substr(5);
+                } else {
+                    continue;
+                }
+                if (is_name ? (target != process_name) : (target != process_path)) continue;
+
+                bool companion = false;
+                for (size_t k = 1; k + 1 < toks.size(); ++k) {
+                    if (toks[k] == "companion") companion = true;
+                }
+                const std::string lib = toks.back();
+
+                std::string real;
+                if (!resolveModuleLib(moddir, lib, real)) continue;
+                const int mfd = memfdFromFile(real);
+                sendModuleRecord(client, real, companion, mfd);
+                if (mfd >= 0) close(mfd);
+            }
+            free(line);
+            fclose(f);
+        }
+        closedir(d);
+    }
+    const uint32_t zero = 0;
+    write(client, &zero, sizeof(zero));
+}
+
 // Handle one companion-spawn request from a loader running in a target
 // process: read the module library path, fork the companion, and hand the
 // control socket back to the loader over `client`.
@@ -2064,9 +2217,47 @@ void handleCompanionRequest(int client) {
         return true;
     };
 
-    uint32_t magic = 0, plen = 0;
-    if (!readAll(&magic, sizeof(magic)) || !readAll(&plen, sizeof(plen)) ||
-        magic != kCompanionReqMagic || plen == 0 || plen > 4096) {
+    uint32_t magic = 0, cmd = 0;
+    if (!readAll(&magic, sizeof(magic)) || !readAll(&cmd, sizeof(cmd)) ||
+        magic != kCompanionReqMagic) {
+        close(client);
+        return;
+    }
+
+    if (cmd == kCompanionCmdModules) {
+        uint32_t nlen = 0, plen = 0;
+        if (!readAll(&nlen, sizeof(nlen)) || nlen == 0 || nlen > 4096) {
+            close(client);
+            return;
+        }
+        std::string name(nlen, '\0');
+        if (!readAll(&name[0], nlen) || name[nlen - 1] != '\0') {
+            close(client);
+            return;
+        }
+        name.resize(nlen - 1);
+        if (!readAll(&plen, sizeof(plen)) || plen == 0 || plen > 4096) {
+            close(client);
+            return;
+        }
+        std::string path(plen, '\0');
+        if (!readAll(&path[0], plen) || path[plen - 1] != '\0') {
+            close(client);
+            return;
+        }
+        path.resize(plen - 1);
+        sendModulesForProcess(client, name, path);
+        close(client);
+        return;
+    }
+
+    if (cmd != kCompanionCmdSpawn) {
+        close(client);
+        return;
+    }
+
+    uint32_t plen = 0;
+    if (!readAll(&plen, sizeof(plen)) || plen == 0 || plen > 4096) {
         close(client);
         return;
     }
@@ -2144,59 +2335,6 @@ void acceptCompanionRequests(int listen_fd) {
     }
 }
 
-// Recursively add world read/search permissions under `dir` (only ever ORs
-// bits in, never removes or changes ownership). The ZNN loader runs inside the
-// target process and must read module configs (zn_modules.txt) and libraries
-// (zygisk/*.so) directly from /data/adb/modules. Root targets (netd, adbd,
-// uid 0) can do so, but non-root targets such as artd (uid 1082) hit a DAC
-// "Permission denied" otherwise. This mirrors ZygiskNext, whose root daemon is
-// the one that reads module files — here the root injector daemon simply makes
-// them readable for the target.
-void makeModulesWorldReadable(const std::string& dir) {
-    DIR* d = opendir(dir.c_str());
-    if (!d) return;
-    struct stat st;
-    if (stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-        chmod(dir.c_str(), st.st_mode | S_IROTH | S_IXOTH);
-    }
-    struct dirent* de;
-    while ((de = readdir(d))) {
-        if (de->d_name[0] == '.' && (de->d_name[1] == '\0' ||
-                                     (de->d_name[1] == '.' && de->d_name[2] == '\0'))) {
-            continue;
-        }
-        const std::string p = dir + "/" + de->d_name;
-        if (lstat(p.c_str(), &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) {
-            makeModulesWorldReadable(p);
-        } else if (S_ISREG(st.st_mode)) {
-            chmod(p.c_str(), st.st_mode | S_IROTH);
-        }
-    }
-    closedir(d);
-}
-
-// Diagnostic: after the DAC fix, confirm a non-root reader can now reach a
-// module config. Logs the first zn_modules.txt access result.
-void logModulesReadability() {
-    DIR* d = opendir("/data/adb/modules");
-    if (!d) {
-        LOGW("modules readability: cannot open /data/adb/modules: %s", strerror(errno));
-        return;
-    }
-    struct dirent* de;
-    while ((de = readdir(d))) {
-        if (de->d_name[0] == '.') continue;
-        std::string zn = std::string("/data/adb/modules/") + de->d_name + "/zn_modules.txt";
-        if (access(zn.c_str(), R_OK) == 0) {
-            LOGI("modules readability: %s readable (R_OK ok)", zn.c_str());
-        } else {
-            LOGI("modules readability: %s NOT readable: %s", zn.c_str(), strerror(errno));
-        }
-    }
-    closedir(d);
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2252,11 +2390,6 @@ int main(int argc, char** argv) {
     collectSystemInfo();
     collectTargets();
     LOGI("collected %zu zn modules", g_targets.size());
-
-    // Non-root targets (e.g. artd, uid 1082) must be able to read module
-    // configs/libs in-process; ensure the /data/adb/modules tree is readable.
-    makeModulesWorldReadable("/data/adb/modules");
-    logModulesReadability();
 
     // Companion-spawn control socket (see kCompanionSock / runCompanionProcess).
     const int companion_listen_fd = createCompanionSocket();
