@@ -671,13 +671,20 @@ bool writeMem(pid_t pid, uintptr_t addr, const void* buf, size_t len) {
     return true;
 }
 
-// Register layouts (all four ABIs, selected at runtime from the target ELF)
+// Register layouts (all ABIs, selected at runtime from the target ELF)
 
-enum class Arch { kArm32, kArm64, kX86, kX86_64, kUnknown };
+enum class Arch { kArm32, kArm64, kX86, kX86_64, kRiscv64, kUnknown };
 
 struct Arm64Regs {
     uint64_t regs[31];
     uint64_t sp, pc, pstate;
+};
+struct Riscv64Regs {
+    uint64_t pc, ra, sp, gp, tp;
+    uint64_t t0, t1, t2, s0, s1;
+    uint64_t a0, a1, a2, a3, a4, a5, a6, a7;
+    uint64_t s2, s3, s4, s5, s6, s7, s8, s9, s10, s11;
+    uint64_t t3, t4, t5, t6;
 };
 struct X64Regs {
     uint64_t r15, r14, r13, r12, rbp, rbx, r11, r10;
@@ -701,6 +708,7 @@ struct Regs {
         X64Regs x64;
         Arm32Regs a32;
         X86Regs x86;
+        Riscv64Regs rv64;
     } u;
 };
 
@@ -708,11 +716,12 @@ bool getRegs(pid_t pid, Regs* r) {
     struct iovec io;
     io.iov_base = &r->u;
     switch (r->arch) {
-        case Arch::kArm64:  io.iov_len = sizeof(Arm64Regs); break;
-        case Arch::kX86_64: io.iov_len = sizeof(X64Regs);   break;
-        case Arch::kArm32:  io.iov_len = sizeof(Arm32Regs); break;
-        case Arch::kX86:    io.iov_len = sizeof(X86Regs);   break;
-        default:            io.iov_len = 0;                 break;
+        case Arch::kArm64:  io.iov_len = sizeof(Arm64Regs);   break;
+        case Arch::kX86_64: io.iov_len = sizeof(X64Regs);     break;
+        case Arch::kArm32:  io.iov_len = sizeof(Arm32Regs);   break;
+        case Arch::kX86:    io.iov_len = sizeof(X86Regs);     break;
+        case Arch::kRiscv64: io.iov_len = sizeof(Riscv64Regs); break;
+        default:            io.iov_len = 0;                   break;
     }
     return ptrace(PTRACE_GETREGSET, pid, reinterpret_cast<void*>(NT_PRSTATUS), &io) == 0;
 }
@@ -720,11 +729,12 @@ bool setRegs(pid_t pid, Regs* r) {
     struct iovec io;
     io.iov_base = &r->u;
     switch (r->arch) {
-        case Arch::kArm64:  io.iov_len = sizeof(Arm64Regs); break;
-        case Arch::kX86_64: io.iov_len = sizeof(X64Regs);   break;
-        case Arch::kArm32:  io.iov_len = sizeof(Arm32Regs); break;
-        case Arch::kX86:    io.iov_len = sizeof(X86Regs);   break;
-        default:            io.iov_len = 0;                 break;
+        case Arch::kArm64:  io.iov_len = sizeof(Arm64Regs);   break;
+        case Arch::kX86_64: io.iov_len = sizeof(X64Regs);     break;
+        case Arch::kArm32:  io.iov_len = sizeof(Arm32Regs);   break;
+        case Arch::kX86:    io.iov_len = sizeof(X86Regs);     break;
+        case Arch::kRiscv64: io.iov_len = sizeof(Riscv64Regs); break;
+        default:            io.iov_len = 0;                   break;
     }
     return ptrace(PTRACE_SETREGSET, pid, reinterpret_cast<void*>(NT_PRSTATUS), &io) == 0;
 }
@@ -735,6 +745,7 @@ uintptr_t getPc(const Regs* r) {
         case Arch::kX86_64: return r->u.x64.rip;
         case Arch::kArm32: return r->u.a32.uregs[15];
         case Arch::kX86: return r->u.x86.eip;
+        case Arch::kRiscv64: return r->u.rv64.pc;
         default: return 0;
     }
 }
@@ -744,6 +755,7 @@ void setPc(Regs* r, uintptr_t v) {
         case Arch::kX86_64: r->u.x64.rip = v; break;
         case Arch::kArm32: r->u.a32.uregs[15] = static_cast<uint32_t>(v); break;
         case Arch::kX86: r->u.x86.eip = static_cast<uint32_t>(v); break;
+        case Arch::kRiscv64: r->u.rv64.pc = v; break;
         default: break;
     }
 }
@@ -753,6 +765,7 @@ uintptr_t getSp(const Regs* r) {
         case Arch::kX86_64: return r->u.x64.rsp;
         case Arch::kArm32: return r->u.a32.uregs[13];
         case Arch::kX86: return r->u.x86.esp;
+        case Arch::kRiscv64: return r->u.rv64.sp;
         default: return 0;
     }
 }
@@ -762,6 +775,7 @@ void setSp(Regs* r, uintptr_t v) {
         case Arch::kX86_64: r->u.x64.rsp = v; break;
         case Arch::kArm32: r->u.a32.uregs[13] = static_cast<uint32_t>(v); break;
         case Arch::kX86: r->u.x86.esp = static_cast<uint32_t>(v); break;
+        case Arch::kRiscv64: r->u.rv64.sp = v; break;
         default: break;
     }
 }
@@ -771,6 +785,7 @@ uintptr_t getRetVal(const Regs* r) {
         case Arch::kX86_64: return r->u.x64.rax;
         case Arch::kArm32: return r->u.a32.uregs[0];
         case Arch::kX86: return r->u.x86.eax;
+        case Arch::kRiscv64: return r->u.rv64.a0;
         default: return 0;
     }
 }
@@ -821,11 +836,16 @@ Arch archFromElf(const ElfHdrInfo& h) {
     if (h.is64) {
         if (h.machine == EM_AARCH64) return Arch::kArm64;
         if (h.machine == EM_X86_64) return Arch::kX86_64;
+        if (h.machine == EM_RISCV) return Arch::kRiscv64;
     } else {
         if (h.machine == EM_ARM) return Arch::kArm32;
         if (h.machine == EM_386) return Arch::kX86;
     }
     return Arch::kUnknown;
+}
+
+bool is64Arch(Arch a) {
+    return a == Arch::kArm64 || a == Arch::kX86_64 || a == Arch::kRiscv64;
 }
 
 // Resolve a dynamic symbol inside an ELF file (32- or 64-bit) mapped at `base`.
@@ -978,6 +998,7 @@ uintptr_t resolveSyscall(pid_t pid, bool is64) {
 int sysMemfdCreate(Arch arch) {
     switch (arch) {
         case Arch::kArm64: return 279;
+        case Arch::kRiscv64: return 279;
         case Arch::kX86_64: return 319;
         case Arch::kArm32: return 385;
         case Arch::kX86: return 356;
@@ -1042,6 +1063,11 @@ bool setupCall(pid_t pid, Regs* r, uintptr_t func, uintptr_t ret, const uintptr_
             r->u.a64.regs[30] = ret;  // lr
             setPc(r, func);
             return true;
+        case Arch::kRiscv64:
+            for (int i = 0; i < nargs && i < 8; ++i) (&r->u.rv64.a0)[i] = args[i];
+            r->u.rv64.ra = ret;
+            setPc(r, func);
+            return true;
         case Arch::kArm32:
             for (int i = 0; i < nargs && i < 4; ++i) r->u.a32.uregs[i] = static_cast<uint32_t>(args[i]);
             r->u.a32.uregs[14] = static_cast<uint32_t>(ret);  // lr
@@ -1086,6 +1112,9 @@ size_t breakpointBytes(Arch arch, bool thumb, uint8_t out[4]) {
         case Arch::kArm64:
             out[0] = 0x00; out[1] = 0x00; out[2] = 0x20; out[3] = 0xD4;  // brk #0
             return 4;
+        case Arch::kRiscv64:
+            out[0] = 0x73; out[1] = 0x00; out[2] = 0x10; out[3] = 0x00;  // ebreak (pc stays)
+            return 4;
         case Arch::kX86_64:
         case Arch::kX86:
             out[0] = 0xCC;  // int3
@@ -1120,7 +1149,7 @@ void restoreEntry(pid_t pid, const Tracee& t) {
 // tracee. The rest of the flow (writing the bytes and calling
 // android_dlopen_ext) continues in handleTrap.
 bool injectAtEntry(pid_t pid, Tracee* t) {
-    bool is64 = (t->arch == Arch::kArm64 || t->arch == Arch::kX86_64);
+    bool is64 = is64Arch(t->arch);
     uintptr_t syscall_addr = resolveSyscall(pid, is64);
     if (!syscall_addr) {
         LOGE("failed to resolve syscall for pid %d", pid);
@@ -1334,7 +1363,7 @@ void handleTrap(pid_t pid, Tracee& t) {
             return;
         }
 
-        bool is64 = (t.arch == Arch::kArm64 || t.arch == Arch::kX86_64);
+        bool is64 = is64Arch(t.arch);
         uintptr_t dlopen_addr = resolveDlopenExt(pid, is64);
         if (!dlopen_addr) {
             bail("cannot resolve android_dlopen_ext");
@@ -1386,7 +1415,7 @@ void handleTrap(pid_t pid, Tracee& t) {
             // Resolve and call znn_loader_init() explicitly instead of from a
             // constructor: its statics may not be constructed yet in .init_array
             // order under LTO. Calling after dlopen returns guarantees they are.
-            bool is64 = (t.arch == Arch::kArm64 || t.arch == Arch::kX86_64);
+            bool is64 = is64Arch(t.arch);
             uintptr_t dlsym_addr = resolveSymbol(pid, is64, "libdl.so", "dlsym");
             if (!dlsym_addr) {
                 LOGE("failed to resolve dlsym for pid %d", pid);
@@ -1426,7 +1455,7 @@ void handleTrap(pid_t pid, Tracee& t) {
         }
 
         // dlopen failed: call dlerror() to learn the reason.
-        bool is64 = (t.arch == Arch::kArm64 || t.arch == Arch::kX86_64);
+        bool is64 = is64Arch(t.arch);
         uintptr_t dlerror_addr = resolveDlerror(pid, is64);
         if (!dlerror_addr || !setupCall(pid, &regs, dlerror_addr, t.entry, nullptr, 0)) {
             LOGE("dlopen(%s) failed for pid %d (cannot resolve/call dlerror)",
@@ -1932,6 +1961,7 @@ void handleEvent(pid_t pid, int status) {
                 uintptr_t sp = getSp(&regs);
                 uintptr_t lr = 0;
                 if (t.arch == Arch::kArm64) lr = regs.u.a64.regs[30];
+                else if (t.arch == Arch::kRiscv64) lr = regs.u.rv64.ra;
                 else if (t.arch == Arch::kArm32) lr = regs.u.a32.uregs[14];
 
                 std::string loc = "(unmapped)";

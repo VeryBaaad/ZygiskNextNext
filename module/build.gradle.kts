@@ -83,19 +83,17 @@ androidComponents.onVariants { variant ->
             filter<ReplaceTokens>("tokens" to tokens)
             filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
         }
-        // AGP stores native artifacts under
-        // intermediates/cxx/<cmakeBuildType>/<hash>/obj/<abi>/. The hash is
-        // unstable, so locate the obj/ directory at execution time and copy
-        // libloader.so -> lib/<abi>/ and injector -> bin/<abi>/ explicitly
-        // (Gradle's from()+eachFile flattening proved unreliable here).
+
         val cmakeBuildType = if (buildTypeLowered == "debug") "Debug" else "RelWithDebInfo"
 
         doLast {
             val objRoot = project(":loader").layout.buildDirectory
                 .dir("intermediates/cxx/$cmakeBuildType").get().asFile
-            val hashDir = objRoot.listFiles()?.firstOrNull { it.isDirectory } ?: return@doLast
+            val hashDir = objRoot.listFiles()
+                ?.filter { it.isDirectory && File(it, "obj").isDirectory }
+                ?.maxByOrNull { it.lastModified() }
+                ?: return@doLast
             val objDir = File(hashDir, "obj")
-            if (!objDir.isDirectory) return@doLast
 
             val dstRoot = moduleDir.get().asFile
             objDir.listFiles()?.forEach { abiDir ->
