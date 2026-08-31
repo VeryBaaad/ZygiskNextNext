@@ -223,7 +223,7 @@ int api_inlineUnhook(void* target) {
     const uintptr_t t = reinterpret_cast<uintptr_t>(target);
 #ifdef __riscv
     rv64hook::ScopedRWXMemory rwx(target);
-    if (rv64hook::InlineUnhook(target) != true) return ZN_FAILED;
+    if (!rv64hook::InlineUnhook(target)) return ZN_FAILED;
 #else
     if (DobbyDestroy(target) != RS_SUCCESS) return ZN_FAILED;
 #endif
