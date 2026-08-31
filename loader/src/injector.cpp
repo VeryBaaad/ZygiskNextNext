@@ -671,7 +671,7 @@ bool writeMem(pid_t pid, uintptr_t addr, const void* buf, size_t len) {
     return true;
 }
 
-// Register layouts (all four ABIs, selected at runtime from the target ELF)
+// Register layouts (all ABIs, selected at runtime from the target ELF)
 
 enum class Arch { kArm32, kArm64, kX86, kX86_64, kRiscv64, kUnknown };
 
