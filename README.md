@@ -6,7 +6,7 @@ A from-scratch, standalone implementation of the **Zygisk Next module**.
 
 A Magisk module that attempts to implement the ZygiskNext API, using Dobby and LSPlt for inline hooking or PLT hooking.
 
-> A Zygisk Next module is a valid Magisk module. Starting with version v1.2.2—released after the project went closed-source—ZygiskNext introduced support for "ZygiskNext modules." These provide more convenient interfaces for inline and PLT hooking and even support advanced injection into the HyperOS Runtime. Consequently, I created this open-source Magisk module—named "ZygiskNextNext"—to load those ZygiskNext modules. Note: ZygiskNextNext is not a Zygisk implementation itself; you must have another Zygisk implementation enabled alongside it.
+> A Zygisk Next module is a valid Magisk module. Starting with version v1.2.2—released after the project went closed-source—ZygiskNext introduced support for "ZygiskNext modules." These provide more convenient interfaces for inline and PLT hooking and even support advanced injection into the HyperOS Runtime. Consequently, I created this open-source Magisk module—named "ZygiskNextNext"—to load those ZygiskNext modules. Note: ZygiskNextNext is not a Zygisk implementation itself; If you need to use Zygisk, you must enable the Zygisk implementation rather than ZygiskNextNext.
 
 ## Supported Versions
 
