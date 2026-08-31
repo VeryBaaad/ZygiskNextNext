@@ -22,7 +22,11 @@
 
 #include <lsplt.hpp>
 
+#ifdef __riscv
+#include <rv64hook.h>
+#else
 #include <dobby.h>
+#endif
 
 #include <android/log.h>
 #include <android/dlext.h>
@@ -197,9 +201,14 @@ int api_inlineHook(void* target, void* addr, void** original) {
         if (g_hooked.count(t)) return ZN_FAILED;
     }
 
+#ifdef __riscv
+    rv64hook::ScopedRWXMemory rwx(target);
+    if (rv64hook::InlineHook(target, addr, original) == nullptr) {
+#else
     if (DobbyHook(target, reinterpret_cast<dobby_dummy_func_t>(addr),
                   reinterpret_cast<dobby_dummy_func_t*>(original)) != RS_SUCCESS) {
-        LOGE("inlineHook %p: DobbyHook failed", reinterpret_cast<void*>(t));
+#endif
+        LOGE("inlineHook %p failed", reinterpret_cast<void*>(t));
         return ZN_FAILED;
     }
 
@@ -212,7 +221,12 @@ int api_inlineUnhook(void* target) {
     if (!target) return ZN_FAILED;
 
     const uintptr_t t = reinterpret_cast<uintptr_t>(target);
+#ifdef __riscv
+    rv64hook::ScopedRWXMemory rwx(target);
+    if (rv64hook::InlineUnhook(target) != true) return ZN_FAILED;
+#else
     if (DobbyDestroy(target) != RS_SUCCESS) return ZN_FAILED;
+#endif
 
     std::lock_guard<std::mutex> lk(g_hook_mutex);
     g_hooked.erase(t);
@@ -429,17 +443,31 @@ static void hyosAtForkPrepare() {
 static void hyosInstallHooks() {
     if (!g_orig_setcon) {
         void* setcon = dlsym(RTLD_DEFAULT, "setcon");
+#ifdef __riscv
+        rv64hook::ScopedRWXMemory rwx(setcon);
+        if (setcon &&
+            rv64hook::InlineHook(setcon, reinterpret_cast<void*>(hyosSetconHook),
+                                 reinterpret_cast<void**>(&g_orig_setcon)) != nullptr) {
+#else
         if (setcon &&
             DobbyHook(setcon, reinterpret_cast<dobby_dummy_func_t>(hyosSetconHook),
                       reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setcon)) == RS_SUCCESS) {
+#endif
             LOGI("HYOS: hooked setcon");
         }
     }
     if (!g_orig_setexeccon) {
         void* setexeccon = dlsym(RTLD_DEFAULT, "setexeccon");
+#ifdef __riscv
+        rv64hook::ScopedRWXMemory rwx(setexeccon);
+        if (setexeccon &&
+            rv64hook::InlineHook(setexeccon, reinterpret_cast<void*>(hyosSetexecconHook),
+                                 reinterpret_cast<void**>(&g_orig_setexeccon)) != nullptr) {
+#else
         if (setexeccon &&
             DobbyHook(setexeccon, reinterpret_cast<dobby_dummy_func_t>(hyosSetexecconHook),
                       reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setexeccon)) == RS_SUCCESS) {
+#endif
             LOGI("HYOS: hooked setexeccon");
         }
     }

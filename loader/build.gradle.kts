@@ -39,9 +39,6 @@ val releaseFlags = arrayOf(
     "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
 )
 
-// Linker-only flags. Passing -Wl,... as compile flags produces a
-// "-Wunused-command-line-argument" warning for every translation unit, so keep
-// them out of cFlags/cppFlags and feed them to the linker explicitly.
 val releaseLinkerFlags = "-Wl,--exclude-libs,ALL -Wl,--gc-sections -Wl,--strip-all"
 
 android {
@@ -50,7 +47,6 @@ android {
     }
     buildFeatures {
         buildConfig = false
-        prefab = true
     }
 
     externalNativeBuild.cmake {
@@ -59,13 +55,14 @@ android {
 
     defaultConfig {
         externalNativeBuild.cmake {
-            arguments += "-DANDROID_STL=none"
-            arguments += "-DLSPLT_STANDALONE=ON"
+            arguments += "-DANDROID_STL=c++_static"
+            arguments += "-DLSPLT_STANDALONE=OFF"
             cFlags("-std=c18", *defaultCFlags)
             cppFlags("-std=c++20", *defaultCFlags)
             ccachePath?.let {
                 arguments += "-DNDK_CCACHE=$it"
             }
+            abiFilters("arm64-v8a", "armeabi-v7a", "x86", "x86_64", "riscv64")
         }
     }
 
@@ -85,8 +82,4 @@ android {
             }
         }
     }
-}
-
-dependencies {
-    implementation("dev.rikka.ndk.thirdparty:cxx:1.2.0")
 }

@@ -63,7 +63,7 @@ else
 fi
 
 # check architecture
-if [ "$ARCH" != "arm" ] && [ "$ARCH" != "arm64" ] && [ "$ARCH" != "x86" ] && [ "$ARCH" != "x64" ]; then
+if [ "$ARCH" != "arm" ] && [ "$ARCH" != "arm64" ] && [ "$ARCH" != "x86" ] && [ "$ARCH" != "x64" ] && [ "$ARCH" != "riscv64" ]; then
   abort "! Unsupported platform: $ARCH"
 else
   ui_print "- Device platform: $ARCH"
@@ -105,11 +105,16 @@ if [ "$ARCH" = "x86" ] || [ "$ARCH" = "x64" ]; then
   extract "$ZIPFILE" 'lib/x86/libloader.so' "$MODPATH/lib" true
   extract "$ZIPFILE" 'lib/x86_64/libloader.so' "$MODPATH/lib64" true
   extract "$ZIPFILE" 'bin/x86_64/injector' "$MODPATH/bin" true
-else
+else if [ "$ARCH" = "arm" ] || [ "$ARCH" = "arm64" ]
   ui_print "- Extracting arm libraries"
   extract "$ZIPFILE" 'lib/armeabi-v7a/libloader.so' "$MODPATH/lib" true
   extract "$ZIPFILE" 'lib/arm64-v8a/libloader.so' "$MODPATH/lib64" true
   extract "$ZIPFILE" 'bin/arm64-v8a/injector' "$MODPATH/bin" true
+else if [ "$ARCH" = "riscv64" ]
+  ui_print "- Extracting RISC-V libraries"
+  extract "$ZIPFILE" 'lib/riscv64/libloader.so' "$MODPATH/lib" true
+  extract "$ZIPFILE" 'lib/riscv64/libloader.so' "$MODPATH/lib64" true
+  extract "$ZIPFILE" 'bin/riscv64/injector' "$MODPATH/bin" true
 fi
 
 unzip -o "$ZIPFILE" "webroot/*" -x "*.sha256" -d "$MODPATH"
