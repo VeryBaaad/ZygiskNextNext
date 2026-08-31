@@ -9,9 +9,6 @@ add_subdirectory(external)
 add_library(elfutil STATIC utils/elf_util.cpp)
 target_include_directories(elfutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(elfutil PUBLIC lzma)
-if (TARGET cxx::cxx)
-    target_link_libraries(elfutil PUBLIC cxx::cxx)
-endif()
 
 add_library(loader SHARED loader.cpp)
 target_include_directories(loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -24,18 +21,10 @@ else()
 endif()
 target_link_libraries(loader PRIVATE ${LOADER_LINK_LIBS})
 
-
-if (TARGET cxx::cxx)
-    target_link_libraries(loader PRIVATE cxx::cxx)
-endif()
-
 target_compile_options(loader PRIVATE -Wall -Wextra -fvisibility=hidden)
 
 add_executable(injector ${CMAKE_CURRENT_SOURCE_DIR}/injector.cpp)
 target_include_directories(injector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(injector PRIVATE ZNN_VERSION="${ZNN_VERSION}")
 target_link_libraries(injector PRIVATE elfutil log)
-if (TARGET cxx::cxx)
-    target_link_libraries(injector PRIVATE cxx::cxx)
-endif()
 target_compile_options(injector PRIVATE -Wall -Wextra)
