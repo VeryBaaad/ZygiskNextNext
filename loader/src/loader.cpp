@@ -332,9 +332,7 @@ int api_connectCompanion(void* handle) {
 // ZN API v4 Runtime: the HyperOS Rust Runtime (HYOS), for apps spawned by
 // /system_ext/bin/hyos_spawner. getRuntime() returns it only inside hyos_spawner;
 // it is a plain static flag, so forked children inherit the runtime and the
-// registered modules. onAppSpecialized fires after the child's SELinux app
-// context is applied (detected by inline-hooking libselinux setcon/setexeccon);
-// fork is observed via pthread_atfork.
+// registered modules. Fork is observed via pthread_atfork.
 
 constexpr int kMaxHyosModules = 4;
 
@@ -346,56 +344,46 @@ int g_hyos_module_count = 0;
 bool g_hyos_in_child = false;  // set by the atfork child handler
 bool g_hyos_fired = false;     // onAppSpecialized already delivered here
 
-// Saved originals of the hooked libselinux entry points.
-int (*g_orig_setcon)(const char*) = nullptr;
-int (*g_orig_setexeccon)(const char*) = nullptr;
+// Saved originals of the hooked libselinux / libc entry points.
+typedef int (*HyosSetcontextFn)(uid_t uid, int is_system_server, const char* se_info,
+                                const char* pkg_name);
+typedef int (*HyosSetnameFn)(pthread_t thread, const char* name);
+HyosSetcontextFn g_orig_setcontext = nullptr;
+HyosSetnameFn g_orig_setname = nullptr;
 bool g_hyos_warned = false;  // log the "hooks unavailable" warning only once
 
-// Read the process name: /proc/self/cmdline first token, fallback PR_GET_NAME.
-static void hyosReadProcessName(char* buf, size_t size) {
-    buf[0] = '\0';
-    int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
-    if (fd >= 0) {
-        ssize_t n = read(fd, buf, size - 1);
-        close(fd);
-        if (n > 0) {
-            // cmdline is NUL-separated; the first token is the process name.
-            buf[n] = '\0';
-            if (buf[0] != '\0') return;
-        }
-    }
-    if (prctl(PR_GET_NAME, buf, 0, 0, 0) == 0 && buf[0] != '\0') return;
-    strlcpy(buf, "hyos_app", size);
-}
+// Captured specialization data (written in the child only; a plain static copy
+// is per-process, so siblings never see each other's values).
+char g_cap_process_name[256];
+bool g_cap_has_process_name = false;  // set by the pthread_setname_np hook
 
 // Deliver onAppSpecialized to every registered module. Runs in the specialized
-// child, right after the SELinux app context has been applied.
-static void hyosDeliverAppSpecialized() {
+// child, right after the SELinux app context has been applied. `pkg_name` and
+// `se_info` are the arguments the spawner passed to selinux_android_setcontext
+// (NUL-terminated, valid for the duration of the hook call.
+static void hyosDeliverAppSpecialized(const char* pkg_name, const char* se_info) {
     if (!g_hyos_in_child || g_hyos_fired || g_hyos_module_count == 0) return;
     g_hyos_fired = true;
 
     static char process_name[256];
     static char package_name[256];
-    static char se_info[64];
+    static char se_info_buf[64];
 
-    hyosReadProcessName(process_name, sizeof(process_name));
+    if (g_cap_has_process_name) {
+        strlcpy(process_name, g_cap_process_name, sizeof(process_name));
+    } else {
+        // Fallback: the 15-char comm the spawner set before context switch.
+        process_name[0] = '\0';
+        if (prctl(PR_GET_NAME, process_name, 0, 0, 0) != 0 || process_name[0] == '\0') {
+            strlcpy(process_name, "hyos_app", sizeof(process_name));
+        }
+    }
+    strlcpy(package_name, pkg_name ? pkg_name : "", sizeof(package_name));
+    strlcpy(se_info_buf, se_info ? se_info : "", sizeof(se_info_buf));
 
-    // package_name: Android names a secondary process "pkg:proc"; the main
-    // process is named after the package itself.
-    strlcpy(package_name, process_name, sizeof(package_name));
-    char* colon = strchr(package_name, ':');
-    if (colon) *colon = '\0';
-
-    // se_info is not exposed by hyos_spawner; check a few plausible env vars
-    // (inherited by the child) and fall back to an empty, non-null string.
-    se_info[0] = '\0';
-    const char* env = getenv("HYOS_SEINFO");
-    if (!env) env = getenv("SEINFO");
-    if (env) strlcpy(se_info, env, sizeof(se_info));
-
-    ZnHyosAppSpecializeArgs args = {process_name, package_name, se_info};
+    ZnHyosAppSpecializeArgs args = {process_name, package_name, se_info_buf};
     LOGI("HYOS app specialized: process=%s package=%s se_info=%s", process_name,
-         package_name, se_info);
+         package_name, se_info_buf);
     for (int i = 0; i < g_hyos_module_count; ++i) {
         if (g_hyos_modules[i].onAppSpecialized) {
             g_hyos_modules[i].onAppSpecialized(&args);
@@ -403,15 +391,26 @@ static void hyosDeliverAppSpecialized() {
     }
 }
 
-static int hyosSetconHook(const char* context) {
-    int ret = g_orig_setcon ? g_orig_setcon(context) : -1;
-    hyosDeliverAppSpecialized();
+static int hyosSetcontextHook(uid_t uid, int is_system_server, const char* se_info,
+                              const char* pkg_name) {
+    int ret = g_orig_setcontext ? g_orig_setcontext(uid, is_system_server, se_info, pkg_name)
+                                : -1;
+    if (ret == 0) {
+        hyosDeliverAppSpecialized(pkg_name, se_info);
+    } else if (!g_hyos_fired && g_hyos_in_child) {
+        LOGW("HYOS: selinux_android_setcontext failed (%d)", ret);
+    }
     return ret;
 }
 
-static int hyosSetexecconHook(const char* context) {
-    int ret = g_orig_setexeccon ? g_orig_setexeccon(context) : -1;
-    hyosDeliverAppSpecialized();
+static int hyosSetnameHook(pthread_t thread, const char* name) {
+    int ret = g_orig_setname ? g_orig_setname(thread, name) : -1;
+    if (ret == 0 && !g_cap_has_process_name && g_hyos_in_child && !g_hyos_fired &&
+        thread == pthread_self() && name && name[0] != '\0') {
+        strlcpy(g_cap_process_name, name, sizeof(g_cap_process_name));
+        g_cap_has_process_name = true;
+        LOGI("HYOS: captured process name %s", g_cap_process_name);
+    }
     return ret;
 }
 
@@ -420,60 +419,65 @@ static int hyosSetexecconHook(const char* context) {
 static void hyosAtForkChild() {
     g_hyos_in_child = true;
     g_hyos_fired = false;
+    g_cap_has_process_name = false;
+    g_cap_process_name[0] = '\0';
 }
 
 // Defined below; forward-declared for the atfork prepare handler.
 static void hyosInstallHooks();
 
-// Runs in the parent right before it forks. Retries the libselinux hook
-// installation: at registerModule time hyos_spawner's own libraries may not be
-// loaded yet (the loader is injected before main), so the first attempt can
-// legitimately fail; by the time the spawner forks an app child its libraries
-// are in memory and the hooks can be installed.
+// Runs in the parent right before it forks. Retries the hook installation: at
+// registerModule time hyos_spawner's own libraries may not be loaded yet (the
+// loader is injected before main), so the first attempt can legitimately fail;
+// by the time the spawner forks an app child its libraries are in memory and
+// the hooks can be installed.
 static void hyosAtForkPrepare() {
-    if (g_hyos_module_count > 0 && (!g_orig_setcon || !g_orig_setexeccon)) {
+    if (g_hyos_module_count > 0 && (!g_orig_setcontext || !g_orig_setname)) {
         hyosInstallHooks();
     }
 }
 
-// Inline-hook libselinux's setcon/setexeccon so that onAppSpecialized fires
-// once the child applies its app context (the last specialization step).
-// Failure is non-fatal: if the library is not loaded (or already hooked), the
-// HYOS callback simply never fires.
+// Inline-hook selinux_android_setcontext so that onAppSpecialized fires once
+// the child applies its app context (the last specialization step), and
+// pthread_setname_np so the exact process name can be captured. Both are
+// resolved at runtime: hyos_spawner links libselinux and calls them directly,
+// so RTLD_DEFAULT finds them once the spawner's libraries are loaded. Failure
+// is non-fatal: if a library is not loaded (or already hooked), the HYOS
+// callback simply never fires.
 static void hyosInstallHooks() {
-    if (!g_orig_setcon) {
-        void* setcon = dlsym(RTLD_DEFAULT, "setcon");
+    if (!g_orig_setcontext) {
+        void* fn = dlsym(RTLD_DEFAULT, "selinux_android_setcontext");
 #ifdef __riscv
-        rv64hook::ScopedRWXMemory rwx(setcon);
-        if (setcon &&
-            rv64hook::InlineHook(setcon, reinterpret_cast<void*>(hyosSetconHook),
-                                 reinterpret_cast<void**>(&g_orig_setcon)) != nullptr) {
+        rv64hook::ScopedRWXMemory rwx(fn);
+        if (fn &&
+            rv64hook::InlineHook(fn, reinterpret_cast<void*>(hyosSetcontextHook),
+                                 reinterpret_cast<void**>(&g_orig_setcontext)) != nullptr) {
 #else
-        if (setcon &&
-            DobbyHook(setcon, reinterpret_cast<dobby_dummy_func_t>(hyosSetconHook),
-                      reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setcon)) == RS_SUCCESS) {
+        if (fn &&
+            DobbyHook(fn, reinterpret_cast<dobby_dummy_func_t>(hyosSetcontextHook),
+                      reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setcontext)) == RS_SUCCESS) {
 #endif
-            LOGI("HYOS: hooked setcon");
+            LOGI("HYOS: hooked selinux_android_setcontext");
         }
     }
-    if (!g_orig_setexeccon) {
-        void* setexeccon = dlsym(RTLD_DEFAULT, "setexeccon");
+    if (!g_orig_setname) {
+        void* fn = dlsym(RTLD_DEFAULT, "pthread_setname_np");
 #ifdef __riscv
-        rv64hook::ScopedRWXMemory rwx(setexeccon);
-        if (setexeccon &&
-            rv64hook::InlineHook(setexeccon, reinterpret_cast<void*>(hyosSetexecconHook),
-                                 reinterpret_cast<void**>(&g_orig_setexeccon)) != nullptr) {
+        rv64hook::ScopedRWXMemory rwx(fn);
+        if (fn &&
+            rv64hook::InlineHook(fn, reinterpret_cast<void*>(hyosSetnameHook),
+                                 reinterpret_cast<void**>(&g_orig_setname)) != nullptr) {
 #else
-        if (setexeccon &&
-            DobbyHook(setexeccon, reinterpret_cast<dobby_dummy_func_t>(hyosSetexecconHook),
-                      reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setexeccon)) == RS_SUCCESS) {
+        if (fn &&
+            DobbyHook(fn, reinterpret_cast<dobby_dummy_func_t>(hyosSetnameHook),
+                      reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setname)) == RS_SUCCESS) {
 #endif
-            LOGI("HYOS: hooked setexeccon");
+            LOGI("HYOS: hooked pthread_setname_np");
         }
     }
-    if (!g_orig_setcon && !g_orig_setexeccon && !g_hyos_warned) {
+    if (!g_orig_setcontext && !g_hyos_warned) {
         g_hyos_warned = true;
-        LOGW("HYOS: libselinux setcon/setexeccon not available, "
+        LOGW("HYOS: selinux_android_setcontext not available, "
              "onAppSpecialized will not fire");
     }
 }
