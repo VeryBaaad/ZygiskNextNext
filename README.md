@@ -56,9 +56,8 @@ Create a Pull Request.
 
 - [Magisk](https://github.com/topjohnwu/Magisk/): makes all these possible
 - [ZygiskNext](https://github.com/Dr-TSNG/ZygiskNext): OG implementation
-- [Dobby](https://github.com/jmpews/Dobby): used for inline hooking [arm64, arm, x64, x86]
-- [rv64hook](https://github.com/eirv/riscv64-inline-hook): used for inline hooking [RISC-V 64]
-- [LSPlt](https://github.com/LSPosed/LSPlt): uesd for plt hooking
+- [Dobby](https://github.com/jmpews/Dobby), [ShadowHook](https://github.com/bytedance/android-inline-hook) and [rv64hook](https://github.com/eirv/riscv64-inline-hook): used for inline hooking
+- [LSPlt](https://github.com/LSPosed/LSPlt) and [ByteHook](https://github.com/bytedance/bhook): uesd for plt hooking
 - [LZMA SDK](https://www.7-zip.org/sdk.html): ELF Parser
 
 ## License
