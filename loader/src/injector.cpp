@@ -111,11 +111,13 @@ struct ModuleInfo {
 constexpr const char* kStateDir = "/data/adb/zygisknextsu";
 constexpr const char* kStateFile = "/data/adb/zygisknextsu/znn_state.json";
 constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
+constexpr const char* kConfigFile = "/data/adb/zygisknextsu/config";
 
 constexpr const char* kCompanionSock = "/data/adb/zygisknextsu/companion.sock";
 constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
 constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
 constexpr uint32_t kCompanionCmdModules = 2;  // list modules for a process
+constexpr uint32_t kCompanionCmdConfig = 3;   // report configured hook engines
 
 constexpr const char* kModuleId = "zygisknextsu";
 
@@ -400,6 +402,144 @@ void collectSystemInfo() {
     }
 }
 
+const char* runtimeAbi() {
+#if defined(__aarch64__)
+    return "arm64-v8a";
+#elif defined(__arm__)
+    return "armeabi-v7a";
+#elif defined(__x86_64__)
+    return "x86_64";
+#elif defined(__i386__)
+    return "x86";
+#elif defined(__riscv)
+    return "riscv64";
+#else
+    return "";
+#endif
+}
+
+std::vector<std::string> inlineHookOptions() {
+    const char* abi = runtimeAbi();
+    if (strcmp(abi, "arm64-v8a") == 0 || strcmp(abi, "armeabi-v7a") == 0) {
+        return {"dobby", "shadowhook"};
+    }
+    if (strcmp(abi, "riscv64") == 0) {
+        return {"rv64hook"};
+    }
+    return {"dobby"};
+}
+
+std::vector<std::string> pltHookOptions() {
+    if (strcmp(runtimeAbi(), "riscv64") == 0) {
+        return {"lsplt"};
+    }
+    return {"lsplt", "bytehook"};
+}
+
+bool optionIn(const std::vector<std::string>& options, const std::string& value) {
+    for (const auto& o : options) {
+        if (o == value) return true;
+    }
+    return false;
+}
+
+bool readHookConfig(std::string* inline_hook, std::string* plt_hook) {
+    FILE* f = fopen(kConfigFile, "re");
+    if (!f) return false;
+    char* line = nullptr;
+    size_t cap = 0;
+    while (getline(&line, &cap, f) > 0) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (l.empty() || l[0] == '#') continue;
+        const size_t eq = l.find('=');
+        if (eq == std::string::npos || eq == 0) continue;
+        const std::string key = l.substr(0, eq);
+        const std::string val = l.substr(eq + 1);
+        if (key == "inline_hook") {
+            *inline_hook = val;
+        } else if (key == "plt_hook") {
+            *plt_hook = val;
+        }
+    }
+    free(line);
+    fclose(f);
+    return true;
+}
+
+struct HookConfig {
+    std::string inline_hook;
+    std::string plt_hook;
+};
+
+HookConfig effectiveHookConfig() {
+    HookConfig out;
+    const std::vector<std::string> inl = inlineHookOptions();
+    const std::vector<std::string> plt = pltHookOptions();
+    out.inline_hook = inl.front();
+    out.plt_hook = plt.front();
+
+    std::string inl_raw, plt_raw;
+    if (readHookConfig(&inl_raw, &plt_raw)) {
+        if (optionIn(inl, inl_raw)) out.inline_hook = inl_raw;
+        if (optionIn(plt, plt_raw)) out.plt_hook = plt_raw;
+    }
+    return out;
+}
+
+bool writeHookConfigFile(const std::string& inline_hook, const std::string& plt_hook) {
+    mkdir(kStateDir, 0755);
+
+    std::string content;
+    content.reserve(64);
+    content += "inline_hook=" + inline_hook + "\n";
+    content += "plt_hook=" + plt_hook + "\n";
+
+    const std::string tmp = std::string(kConfigFile) + ".tmp";
+    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    size_t off = 0;
+    while (off < content.size()) {
+        const ssize_t n = write(fd, content.data() + off, content.size() - off);
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    fsync(fd);
+    close(fd);
+    if (off != content.size()) {
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (rename(tmp.c_str(), kConfigFile) != 0) {
+        unlink(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
+void appendHookOptionJson(std::string& out, const std::string& value,
+                          const std::vector<std::string>& options) {
+    out += "{\"value\":\"" + jsonEscape(value) + "\",\"options\":[";
+    bool first = true;
+    for (const auto& o : options) {
+        if (!first) out += ",";
+        first = false;
+        out += "\"" + jsonEscape(o) + "\"";
+    }
+    out += "]}";
+}
+
+std::string buildHookConfigJson() {
+    const HookConfig cfg = effectiveHookConfig();
+    std::string out;
+    out += "{\"inlineHook\":";
+    appendHookOptionJson(out, cfg.inline_hook, inlineHookOptions());
+    out += ",\"pltHook\":";
+    appendHookOptionJson(out, cfg.plt_hook, pltHookOptions());
+    out += "}";
+    return out;
+}
+
 void appendRootJson(std::string& out, const RootImplInfo& r) {
     out += "{\"kernelSU\":\"" + jsonEscape(r.kernel_su) + "\",\"magisk\":\"" +
            jsonEscape(r.magisk) + "\",\"apatch\":\"" + jsonEscape(r.apatch) + "\"}";
@@ -435,7 +575,9 @@ std::string buildStateJson() {
            ",\"abi\":\"" + jsonEscape(g_system.abi) + "\",\"abilist\":\"" + jsonEscape(g_system.abilist) +
            "\",\"root\":";
     appendRootJson(out, g_system.root);
-    out += "},\"modules\":[";
+    out += "},\"config\":";
+    out += buildHookConfigJson();
+    out += ",\"modules\":[";
     bool first = true;
     for (const auto& kv : g_modules) {
         if (!first) out += ",";
@@ -672,11 +814,13 @@ pid_t findInjectorPid() {
     return found;
 }
 
-// WebUI control interface: `injector --ctl <status|system|modules|rescan>`.
-// Reads the daemon-written snapshot and prints JSON on stdout. This replaces
-// the old znn_api.sh entirely: nothing is scanned on demand, the daemon's
-// recorded state is simply echoed back.
-int ctlMain(const char* cmd) {
+// WebUI control interface: `injector --ctl <cmd> [args]`. The read commands
+// (status/system/modules) echo the daemon-written snapshot as JSON; `config`
+// reports the hook engine pair; `config-set` persists a new pair and nudges the
+// daemon to refresh its snapshot; `rescan` asks the daemon to rescan modules.
+// This replaces the old znn_api.sh entirely: nothing is scanned on demand, the
+// daemon's recorded state is simply echoed back.
+int ctlMain(const char* cmd, int nargs, char** args) {
     std::string state;
     {
         int fd = open(kStateFile, O_RDONLY | O_CLOEXEC);
@@ -696,6 +840,49 @@ int ctlMain(const char* cmd) {
         }
         kill(pid, SIGHUP);
         printf("injector (%d) requested to rescan modules\n", pid);
+        return 0;
+    }
+
+    if (strcmp(cmd, "config") == 0) {
+        printf("%s\n", buildHookConfigJson().c_str());
+        return 0;
+    }
+
+    if (strcmp(cmd, "config-set") == 0) {
+        if (nargs != 2) {
+            fprintf(stderr, "usage: injector --ctl config-set <inline|plt> <engine>\n");
+            return 1;
+        }
+        const std::string kind = args[0];
+        const std::string value = args[1];
+
+        const bool is_inline = kind == "inline";
+        const bool is_plt = kind == "plt";
+        const std::vector<std::string> options = is_inline ? inlineHookOptions()
+                                                           : is_plt ? pltHookOptions()
+                                                                    : std::vector<std::string>();
+        if (!is_inline && !is_plt) {
+            fprintf(stderr, "usage: injector --ctl config-set <inline|plt> <engine>\n");
+            return 1;
+        }
+        if (!optionIn(options, value)) {
+            fprintf(stderr, "invalid %s engine \"%s\" for this device\n", kind.c_str(),
+                    value.c_str());
+            return 1;
+        }
+
+        const HookConfig current = effectiveHookConfig();
+        const std::string inline_value = is_inline ? value : current.inline_hook;
+        const std::string plt_value = is_plt ? value : current.plt_hook;
+        if (!writeHookConfigFile(inline_value, plt_value)) {
+            fprintf(stderr, "cannot write %s\n", kConfigFile);
+            return 1;
+        }
+
+        pid_t pid = findInjectorPid();
+        if (pid > 0) kill(pid, SIGHUP);
+
+        printf("%s\n", buildHookConfigJson().c_str());
         return 0;
     }
 
@@ -746,7 +933,9 @@ int ctlMain(const char* cmd) {
         return 0;
     }
 
-    fprintf(stderr, "usage: injector --ctl <status|system|modules|rescan>\n");
+    fprintf(stderr,
+            "usage: injector --ctl <status|system|modules|config|config-set <inline|plt> "
+            "<engine>|rescan>\n");
     return 1;
 }
 
@@ -2372,6 +2561,33 @@ void handleCompanionRequest(int client) {
         return;
     }
 
+    if (cmd == kCompanionCmdConfig) {
+        const HookConfig cfg = effectiveHookConfig();
+        auto sendString = [&](const std::string& s) {
+            const uint32_t len = static_cast<uint32_t>(s.size() + 1);
+            size_t off = 0;
+            while (off < sizeof(len)) {
+                const ssize_t n = write(client,
+                                       reinterpret_cast<const char*>(&len) + off,
+                                       sizeof(len) - off);
+                if (n <= 0) return false;
+                off += static_cast<size_t>(n);
+            }
+            off = 0;
+            while (off < s.size() + 1) {
+                const ssize_t n = write(client, s.data() + off, s.size() + 1 - off);
+                if (n <= 0) return false;
+                off += static_cast<size_t>(n);
+            }
+            return true;
+        };
+        if (!sendString(cfg.inline_hook) || !sendString(cfg.plt_hook)) {
+            LOGE("config request: write to client failed");
+        }
+        close(client);
+        return;
+    }
+
     if (cmd != kCompanionCmdSpawn) {
         close(client);
         return;
@@ -2457,11 +2673,12 @@ void acceptCompanionRequests(int listen_fd) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // WebUI control mode: `injector --ctl <status|system|modules|rescan>`.
-    // Runs as a short-lived client that echoes the daemon's state snapshot; it
+    // WebUI control mode: `injector --ctl <status|system|modules|config|
+    // config-set <inline|plt> <engine>|rescan>`. Runs as a short-lived client
+    // that echoes the daemon's state snapshot (or updates the hook config); it
     // never scans /proc on demand and needs no module-dir argument.
     if (argc > 2 && strcmp(argv[1], "--ctl") == 0) {
-        return ctlMain(argv[2]);
+        return ctlMain(argv[2], argc - 3, argv + 3);
     }
 
     if (argc > 1) {

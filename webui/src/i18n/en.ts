@@ -21,6 +21,14 @@ export const en: Record<string, string> = {
   'modules.expand': 'Expand',
   'modules.collapse': 'Collapse',
 
+  'config.title': 'Configuration',
+  'config.inlineHook': 'Inline Hook implementation',
+  'config.pltHook': 'PLT Hook implementation',
+  'config.reloadHint':
+    'Newly started processes use the selected engines. A restarting the target processes is required for the change to take effect.',
+  'config.saved': 'Saved',
+  'config.saveFailed': 'Failed to save configuration',
+
   'empty.title': 'No cards to display',
 
   'footer.github': 'Github',

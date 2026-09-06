@@ -28,6 +28,14 @@
 #include <dobby.h>
 #endif
 
+#if defined(__aarch64__) || defined(__arm__)
+#include <shadowhook.h>
+#endif
+
+#ifndef __riscv
+#include <bytehook.h>
+#endif
+
 #include <android/log.h>
 #include <android/dlext.h>
 #include <ctype.h>
@@ -48,6 +56,7 @@
 #include <unistd.h>
 
 #include <mutex>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -138,14 +147,304 @@ constexpr char kCompanionSock[] = "/data/adb/zygisknextsu/companion.sock";
 constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
 constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
 constexpr uint32_t kCompanionCmdModules = 2;  // list modules matching this process
+constexpr uint32_t kCompanionCmdConfig = 3;   // report the configured hook engines
+
+constexpr char kConfigFile[] = "/data/adb/zygisknextsu/config";
+
+enum class InlineEngine { kDobby, kShadowHook, kRv64Hook };
+enum class PltEngine { kLsplt, kByteHook };
+
+const char* inlineEngineName(InlineEngine e) {
+    switch (e) {
+        case InlineEngine::kDobby: return "dobby";
+        case InlineEngine::kShadowHook: return "shadowhook";
+        case InlineEngine::kRv64Hook: return "rv64hook";
+    }
+    return "unknown";
+}
+
+const char* pltEngineName(PltEngine e) {
+    switch (e) {
+        case PltEngine::kLsplt: return "lsplt";
+        case PltEngine::kByteHook: return "bytehook";
+    }
+    return "unknown";
+}
+
+bool inlineEngineSupported(InlineEngine e) {
+    switch (e) {
+        case InlineEngine::kDobby:
+#ifdef __riscv
+            return false;
+#else
+            return true;
+#endif
+        case InlineEngine::kShadowHook:
+#if defined(__aarch64__) || defined(__arm__)
+            return true;
+#else
+            return false;
+#endif
+        case InlineEngine::kRv64Hook:
+#ifdef __riscv
+            return true;
+#else
+            return false;
+#endif
+    }
+    return false;
+}
+
+bool pltEngineSupported(PltEngine e) {
+    switch (e) {
+        case PltEngine::kLsplt:
+            return true;
+        case PltEngine::kByteHook:
+#ifndef __riscv
+            return true;
+#else
+            return false;
+#endif
+    }
+    return false;
+}
+
+InlineEngine defaultInlineEngine() {
+#ifdef __riscv
+    return InlineEngine::kRv64Hook;
+#else
+    return InlineEngine::kDobby;
+#endif
+}
+
+PltEngine defaultPltEngine() { return PltEngine::kLsplt; }
+
+bool parseInlineEngine(const char* name, InlineEngine* out) {
+    if (!name) return false;
+    InlineEngine e;
+    if (strcmp(name, "dobby") == 0) {
+        e = InlineEngine::kDobby;
+    } else if (strcmp(name, "shadowhook") == 0) {
+        e = InlineEngine::kShadowHook;
+    } else if (strcmp(name, "rv64hook") == 0) {
+        e = InlineEngine::kRv64Hook;
+    } else {
+        return false;
+    }
+    if (!inlineEngineSupported(e)) return false;
+    *out = e;
+    return true;
+}
+
+bool parsePltEngine(const char* name, PltEngine* out) {
+    if (!name) return false;
+    PltEngine e;
+    if (strcmp(name, "lsplt") == 0) {
+        e = PltEngine::kLsplt;
+    } else if (strcmp(name, "bytehook") == 0) {
+        e = PltEngine::kByteHook;
+    } else {
+        return false;
+    }
+    if (!pltEngineSupported(e)) return false;
+    *out = e;
+    return true;
+}
+
+bool readHookConfigFile(std::string& inline_out, std::string& plt_out) {
+    FILE* f = fopen(kConfigFile, "re");
+    if (!f) return false;
+    char* line = nullptr;
+    size_t cap = 0;
+    while (getline(&line, &cap, f) > 0) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        size_t eq = l.find('=');
+        if (eq == std::string::npos || eq == 0) continue;
+        const std::string key = l.substr(0, eq);
+        const std::string val = l.substr(eq + 1);
+        if (key == "inline_hook") inline_out = val;
+        else if (key == "plt_hook") plt_out = val;
+    }
+    free(line);
+    fclose(f);
+    return !inline_out.empty() || !plt_out.empty();
+}
 
 std::mutex g_hook_mutex;
-std::set<uintptr_t> g_hooked;  // addresses currently inline-hooked
+std::set<uintptr_t> g_hooked;               // addresses currently inline-hooked
+std::map<uintptr_t, void*> g_shadow_stubs;  // ShadowHook stub per hooked address
+
+InlineEngine g_inline_engine = defaultInlineEngine();
+PltEngine g_plt_engine = defaultPltEngine();
+
+#if defined(__arm__) || defined(__aarch64__)
+std::once_flag g_shadowhook_once;
+int g_shadowhook_init_result = -1;
+#endif
+
+#ifndef __riscv
+std::once_flag g_bytehook_once;
+int g_bytehook_init_result = -1;
+#endif
+
+[[maybe_unused]] bool ensureShadowHookInit() {
+#if defined(__aarch64__) || defined(__arm__)
+    std::call_once(g_shadowhook_once, [] {
+        g_shadowhook_init_result = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
+    });
+    if (g_shadowhook_init_result != 0) {
+        LOGE("shadowhook_init failed: %s", shadowhook_to_errmsg(shadowhook_get_init_errno()));
+        return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+[[maybe_unused]] bool ensureByteHookInit() {
+#ifndef __riscv
+    std::call_once(g_bytehook_once, [] {
+#if defined(__aarch64__) || defined(__arm__)
+        (void)ensureShadowHookInit();
+#endif
+        g_bytehook_init_result = bytehook_init(BYTEHOOK_MODE_MANUAL, false);
+    });
+    if (g_bytehook_init_result != 0) {
+        LOGE("bytehook_init failed: %d", g_bytehook_init_result);
+        return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+void ensureInlineEngineReady() {
+    if (g_inline_engine != InlineEngine::kShadowHook) return;
+    if (!ensureShadowHookInit()) {
+        const InlineEngine fallback = defaultInlineEngine();
+        LOGE("shadowhook unavailable in pid %d, falling back to inline=%s for this process",
+             getpid(), inlineEngineName(fallback));
+        g_inline_engine = fallback;
+    }
+}
+
+void ensurePltEngineReady() {
+    if (g_plt_engine != PltEngine::kByteHook) return;
+    if (!ensureByteHookInit()) {
+        LOGE("bytehook unavailable in pid %d, falling back to plt=lsplt for this process",
+             getpid());
+        g_plt_engine = PltEngine::kLsplt;
+    }
+}
+
+bool inlineHookRaw(void* target, void* addr, void** original) {
+    if (!target || !addr) return false;
+    ensureInlineEngineReady();
+    switch (g_inline_engine) {
+        case InlineEngine::kDobby:
+#ifndef __riscv
+            return DobbyHook(target, reinterpret_cast<dobby_dummy_func_t>(addr),
+                             reinterpret_cast<dobby_dummy_func_t*>(original)) == RS_SUCCESS;
+#else
+            return false;
+#endif
+        case InlineEngine::kShadowHook:
+#if defined(__aarch64__) || defined(__arm__)
+            if (!ensureShadowHookInit()) return false;
+            return shadowhook_hook_func_addr(target, addr, original) != nullptr;
+#else
+            return false;
+#endif
+        case InlineEngine::kRv64Hook:
+#ifdef __riscv
+            rv64hook::ScopedRWXMemory rwx(target);
+            return rv64hook::InlineHook(target, addr, original) != nullptr;
+#else
+            return false;
+#endif
+    }
+    return false;
+}
+
+#ifndef __riscv
+struct PltHookRecord {
+    void* stub = nullptr;
+    void* original = nullptr;
+};
+
+std::mutex g_plt_hook_mutex;
+std::map<std::string, PltHookRecord> g_plt_hook_records;
+
+extern "C" {
+static void bytehookHookedCallback(bytehook_stub_t stub, int status_code, const char* caller_path_name,
+                                   const char* sym_name, void* new_func, void* prev_func, void* arg) {
+    (void)stub;
+    (void)caller_path_name;
+    (void)sym_name;
+    (void)new_func;
+    if (status_code == 0 && prev_func) {
+        auto* out = static_cast<void**>(arg);
+        if (out && *out == nullptr) *out = prev_func;
+    }
+}
+}
+
+int pltHookByteHook(const std::string& caller_path, const char* symbol, void* hook,
+                    void** original) {
+    if (!ensureByteHookInit()) return ZN_FAILED;
+
+    const std::string key = caller_path + "\x01" + symbol;
+    {
+        std::lock_guard<std::mutex> lk(g_plt_hook_mutex);
+        auto it = g_plt_hook_records.find(key);
+        if (it != g_plt_hook_records.end()) {
+            if (hook == it->second.original) {
+                // Documented unhook: call with hook_handler == original.
+                if (bytehook_unhook(it->second.stub) == 0) {
+                    if (original) *original = it->second.original;
+                    g_plt_hook_records.erase(it);
+                    return ZN_SUCCESS;
+                }
+                LOGE("pltHook %s: bytehook_unhook failed", symbol);
+                return ZN_FAILED;
+            }
+            LOGE("pltHook %s: %s is already hooked, unhook first", symbol,
+                 caller_path.c_str());
+            return ZN_FAILED;
+        }
+    }
+
+    PltHookRecord rec;
+    const bytehook_stub_t stub =
+        bytehook_hook_single(caller_path.c_str(), nullptr, symbol, hook, bytehookHookedCallback,
+                             &rec.original);
+    if (!stub) {
+        LOGE("pltHook %s: bytehook_hook_single failed for %s", symbol, caller_path.c_str());
+        return ZN_FAILED;
+    }
+    if (!rec.original) {
+        LOGE("pltHook %s: no matching relocation in %s", symbol, caller_path.c_str());
+        bytehook_unhook(stub);
+        return ZN_FAILED;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_plt_hook_mutex);
+        rec.stub = stub;
+        g_plt_hook_records[key] = std::move(rec);
+    }
+    if (original) *original = rec.original;
+    return ZN_SUCCESS;
+}
+#endif  // !__riscv
 
 // API implementation
 
 int api_pltHook(void* base, const char* symbol, void* hook, void** original) {
     if (!base || !symbol || !hook) return ZN_FAILED;
+    ensurePltEngineReady();
 
     LOGI("pltHook base=%p symbol=%s", base, symbol);
     const uintptr_t b = reinterpret_cast<uintptr_t>(base);
@@ -155,6 +454,13 @@ int api_pltHook(void* base, const char* symbol, void* hook, void** original) {
         LOGI("pltHook %s: dev=%llu inode=%llu path=%s", symbol,
              static_cast<unsigned long long>(m.dev), static_cast<unsigned long long>(m.inode),
              m.path.c_str());
+
+#ifndef __riscv
+        if (g_plt_engine == PltEngine::kByteHook) {
+            return pltHookByteHook(m.path, symbol, hook, original);
+        }
+#endif
+
         void* backup = nullptr;
         if (!lsplt::RegisterHook(m.dev, m.inode, symbol, hook, &backup)) {
             LOGE("pltHook %s: RegisterHook failed", symbol);
@@ -173,6 +479,7 @@ int api_pltHook(void* base, const char* symbol, void* hook, void** original) {
 
 int api_inlineHook(void* target, void* addr, void** original) {
     if (!target || !addr) return ZN_FAILED;
+    ensureInlineEngineReady();
 
     const uintptr_t t = reinterpret_cast<uintptr_t>(target);
     {
@@ -201,32 +508,97 @@ int api_inlineHook(void* target, void* addr, void** original) {
         if (g_hooked.count(t)) return ZN_FAILED;
     }
 
-#ifdef __riscv
-    rv64hook::ScopedRWXMemory rwx(target);
-    if (rv64hook::InlineHook(target, addr, original) == nullptr) {
+    void* shadow_stub = nullptr;
+    switch (g_inline_engine) {
+        case InlineEngine::kDobby:
+#ifndef __riscv
+            if (DobbyHook(target, reinterpret_cast<dobby_dummy_func_t>(addr),
+                          reinterpret_cast<dobby_dummy_func_t*>(original)) != RS_SUCCESS) {
+                LOGE("inlineHook %p failed", reinterpret_cast<void*>(t));
+                return ZN_FAILED;
+            }
 #else
-    if (DobbyHook(target, reinterpret_cast<dobby_dummy_func_t>(addr),
-                  reinterpret_cast<dobby_dummy_func_t*>(original)) != RS_SUCCESS) {
+            return ZN_FAILED;
 #endif
-        LOGE("inlineHook %p failed", reinterpret_cast<void*>(t));
+            break;
+        case InlineEngine::kShadowHook:
+#if defined(__aarch64__) || defined(__arm__)
+            if (!ensureShadowHookInit()) return ZN_FAILED;
+            shadow_stub = shadowhook_hook_func_addr(target, addr, original);
+            if (!shadow_stub) {
+                LOGE("inlineHook %p failed: %s", reinterpret_cast<void*>(t),
+                     shadowhook_to_errmsg(shadowhook_get_errno()));
+                return ZN_FAILED;
+            }
+#else
+            return ZN_FAILED;
+#endif
+            break;
+        case InlineEngine::kRv64Hook:
+#ifdef __riscv
+        {
+            rv64hook::ScopedRWXMemory rwx(target);
+            if (rv64hook::InlineHook(target, addr, original) == nullptr) {
+                LOGE("inlineHook %p failed", reinterpret_cast<void*>(t));
+                return ZN_FAILED;
+            }
+        }
+#else
         return ZN_FAILED;
+#endif
+        break;
     }
 
     std::lock_guard<std::mutex> lk(g_hook_mutex);
     g_hooked.insert(t);
+    if (shadow_stub) g_shadow_stubs[t] = shadow_stub;
     return ZN_SUCCESS;
 }
 
 int api_inlineUnhook(void* target) {
     if (!target) return ZN_FAILED;
+    ensureInlineEngineReady();
 
     const uintptr_t t = reinterpret_cast<uintptr_t>(target);
-#ifdef __riscv
-    rv64hook::ScopedRWXMemory rwx(target);
-    if (!rv64hook::InlineUnhook(target)) return ZN_FAILED;
+    switch (g_inline_engine) {
+        case InlineEngine::kDobby:
+#ifndef __riscv
+            if (DobbyDestroy(target) != RS_SUCCESS) return ZN_FAILED;
 #else
-    if (DobbyDestroy(target) != RS_SUCCESS) return ZN_FAILED;
+            return ZN_FAILED;
 #endif
+            break;
+        case InlineEngine::kShadowHook: {
+#if defined(__aarch64__) || defined(__arm__)
+            void* stub = nullptr;
+            {
+                std::lock_guard<std::mutex> lk(g_hook_mutex);
+                auto it = g_shadow_stubs.find(t);
+                if (it != g_shadow_stubs.end()) {
+                    stub = it->second;
+                    g_shadow_stubs.erase(it);
+                }
+            }
+            if (!stub || shadowhook_unhook(stub) != 0) {
+                LOGE("inlineUnhook %p failed", reinterpret_cast<void*>(t));
+                return ZN_FAILED;
+            }
+#else
+            return ZN_FAILED;
+#endif
+            break;
+        }
+        case InlineEngine::kRv64Hook:
+#ifdef __riscv
+        {
+            rv64hook::ScopedRWXMemory rwx(target);
+            if (!rv64hook::InlineUnhook(target)) return ZN_FAILED;
+        }
+#else
+        return ZN_FAILED;
+#endif
+        break;
+    }
 
     std::lock_guard<std::mutex> lk(g_hook_mutex);
     g_hooked.erase(t);
@@ -447,31 +819,15 @@ static void hyosAtForkPrepare() {
 static void hyosInstallHooks() {
     if (!g_orig_setcontext) {
         void* fn = dlsym(RTLD_DEFAULT, "selinux_android_setcontext");
-#ifdef __riscv
-        rv64hook::ScopedRWXMemory rwx(fn);
-        if (fn &&
-            rv64hook::InlineHook(fn, reinterpret_cast<void*>(hyosSetcontextHook),
-                                 reinterpret_cast<void**>(&g_orig_setcontext)) != nullptr) {
-#else
-        if (fn &&
-            DobbyHook(fn, reinterpret_cast<dobby_dummy_func_t>(hyosSetcontextHook),
-                      reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setcontext)) == RS_SUCCESS) {
-#endif
+        if (fn && inlineHookRaw(fn, reinterpret_cast<void*>(hyosSetcontextHook),
+                                reinterpret_cast<void**>(&g_orig_setcontext))) {
             LOGI("HYOS: hooked selinux_android_setcontext");
         }
     }
     if (!g_orig_setname) {
         void* fn = dlsym(RTLD_DEFAULT, "pthread_setname_np");
-#ifdef __riscv
-        rv64hook::ScopedRWXMemory rwx(fn);
-        if (fn &&
-            rv64hook::InlineHook(fn, reinterpret_cast<void*>(hyosSetnameHook),
-                                 reinterpret_cast<void**>(&g_orig_setname)) != nullptr) {
-#else
-        if (fn &&
-            DobbyHook(fn, reinterpret_cast<dobby_dummy_func_t>(hyosSetnameHook),
-                      reinterpret_cast<dobby_dummy_func_t*>(&g_orig_setname)) == RS_SUCCESS) {
-#endif
+        if (fn && inlineHookRaw(fn, reinterpret_cast<void*>(hyosSetnameHook),
+                                reinterpret_cast<void**>(&g_orig_setname))) {
             LOGI("HYOS: hooked pthread_setname_np");
         }
     }
@@ -751,6 +1107,66 @@ static bool requestModulesFromDaemon(const std::string& process_name,
     }
     close(fd);
     return true;
+}
+
+static bool requestHookConfigFromDaemon(std::string& inline_out, std::string& plt_out) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+
+    struct sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, kCompanionSock, sizeof(addr.sun_path));
+    if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        return false;
+    }
+    struct timeval tv {};
+    tv.tv_sec = 5;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    const uint32_t magic = kCompanionReqMagic;
+    const uint32_t cmd = kCompanionCmdConfig;
+    auto writeAll = [&](const void* buf, size_t len) {
+        const auto* p = static_cast<const char*>(buf);
+        size_t off = 0;
+        while (off < len) {
+            const ssize_t n = write(fd, p + off, len - off);
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    };
+    auto recvString = [&](std::string& out) {
+        uint32_t len = 0;
+        if (!recvFull(fd, &len, sizeof(len), nullptr) || len == 0 || len > 64) return false;
+        out.assign(len, '\0');
+        if (!recvFull(fd, &out[0], len, nullptr) || out[len - 1] != '\0') return false;
+        out.resize(len - 1);
+        return true;
+    };
+    const bool ok = writeAll(&magic, sizeof(magic)) && writeAll(&cmd, sizeof(cmd)) &&
+                    recvString(inline_out) && recvString(plt_out);
+    close(fd);
+    return ok;
+}
+
+static void resolveHookEngines() {
+    InlineEngine inline_engine = defaultInlineEngine();
+    PltEngine plt_engine = defaultPltEngine();
+
+    std::string inline_name, plt_name;
+    if (requestHookConfigFromDaemon(inline_name, plt_name) ||
+        readHookConfigFile(inline_name, plt_name)) {
+        InlineEngine parsed_inline;
+        PltEngine parsed_plt;
+        if (parseInlineEngine(inline_name.c_str(), &parsed_inline)) inline_engine = parsed_inline;
+        if (parsePltEngine(plt_name.c_str(), &parsed_plt)) plt_engine = parsed_plt;
+    }
+
+    g_inline_engine = inline_engine;
+    g_plt_engine = plt_engine;
+    LOGI("hook engines: inline=%s plt=%s", inlineEngineName(g_inline_engine),
+         pltEngineName(g_plt_engine));
 }
 
 [[noreturn]] void companionMain(const char* lib_path, int ctl_fd) {
@@ -1037,6 +1453,8 @@ void loadAllModules() {
 // guarantees every static constructor has finished.
 extern "C" __attribute__((visibility("default"))) void znn_loader_init() {
     LOGI("loader initialized in pid %d (%s)", getpid(), getProcessPath().c_str());
+
+    resolveHookEngines();
 
     // Expose the HyperOS Rust Runtime API when we are inside hyos_spawner
     // itself (the loader is injected there by matching
