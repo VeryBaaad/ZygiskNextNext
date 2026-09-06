@@ -12,12 +12,26 @@ target_link_libraries(elfutil PUBLIC lzma)
 
 add_library(loader SHARED loader.cpp)
 target_include_directories(loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
+    target_include_directories(loader PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/shadowhook/shadowhook/src/main/cpp/include)
+endif ()
+if (NOT ANDROID_ABI STREQUAL "riscv64")
+    target_include_directories(loader PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/bytehook/bytehook/src/main/cpp/include)
+endif ()
 
 set(LOADER_LINK_LIBS log elfutil lsplt_static)
 if (ANDROID_ABI STREQUAL "riscv64")
     set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} rv64hook-static)
 else()
     set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} dobby)
+endif()
+if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} shadowhook)
+endif()
+if (NOT ANDROID_ABI STREQUAL "riscv64")
+    set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} bytehook)
 endif()
 target_link_libraries(loader PRIVATE ${LOADER_LINK_LIBS})
 

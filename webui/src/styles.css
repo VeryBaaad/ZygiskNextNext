@@ -195,6 +195,60 @@ znn-top-bar {
   background: var(--md-sys-color-surface-bright);
 }
 
+.config-card {
+  background: var(--md-sys-color-surface-bright);
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+}
+
+.config-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.config-control {
+  position: relative;
+}
+
+.config-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 132px;
+  justify-content: space-between;
+  padding: 6px 4px 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+
+.config-select-label {
+  font-weight: 500;
+}
+
+.config-select-arrow {
+  --md-icon-size: 20px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.config-hint {
+  padding-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--md-sys-color-on-surface-variant);
+  opacity: 0.9;
+}
+
 .info-row {
   display: flex;
   align-items: baseline;

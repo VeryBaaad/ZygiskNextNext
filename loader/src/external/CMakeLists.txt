@@ -8,6 +8,67 @@ endif ()
 option(LSPLT_BUILD_SHARED "Build LSPlt as a shared library" OFF)
 add_subdirectory(lsplt/lsplt/src/main/jni)
 
+if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
+    enable_language(ASM)
+    set(SHADOWHOOK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadowhook/shadowhook/src/main/cpp)
+    if (ANDROID_ABI STREQUAL "arm64-v8a")
+        set(SHADOWHOOK_ARCH "arm64")
+    else ()
+        set(SHADOWHOOK_ARCH "arm")
+    endif ()
+    file(GLOB SHADOWHOOK_SOURCES
+        ${SHADOWHOOK_SRC}/*.c
+        ${SHADOWHOOK_SRC}/arch/${SHADOWHOOK_ARCH}/*.c
+        ${SHADOWHOOK_SRC}/arch/${SHADOWHOOK_ARCH}/*.S
+        ${SHADOWHOOK_SRC}/common/*.c
+        ${SHADOWHOOK_SRC}/third_party/*/*.c
+    )
+    add_library(shadowhook STATIC ${SHADOWHOOK_SOURCES})
+    target_include_directories(shadowhook PRIVATE
+        ${SHADOWHOOK_SRC}
+        ${SHADOWHOOK_SRC}/include
+        ${SHADOWHOOK_SRC}/arch/${SHADOWHOOK_ARCH}
+        ${SHADOWHOOK_SRC}/common
+        ${SHADOWHOOK_SRC}/third_party/xdl
+        ${SHADOWHOOK_SRC}/third_party/bsd
+        ${SHADOWHOOK_SRC}/third_party/lss
+    )
+    target_compile_options(shadowhook PRIVATE
+        -Wno-unused-parameter
+        -Wno-unused-but-set-variable
+        -Wno-unused-variable
+        -Wno-unused-function
+    )
+endif ()
+
+if (NOT ANDROID_ABI STREQUAL "riscv64")
+    set(BYTEHOOK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/bytehook/bytehook/src/main/cpp)
+    file(GLOB BYTEHOOK_SOURCES ${BYTEHOOK_SRC}/*.c)
+    add_library(bytehook STATIC ${BYTEHOOK_SOURCES})
+    target_compile_definitions(bytehook PRIVATE
+        bytesig_init=bytehook_bytesig_init
+        bytesig_protect=bytehook_bytesig_protect
+        bytesig_unprotect=bytehook_bytesig_unprotect
+    )
+    target_include_directories(bytehook PRIVATE
+        ${BYTEHOOK_SRC}
+        ${BYTEHOOK_SRC}/include
+        ${BYTEHOOK_SRC}/third_party/bsd
+        ${BYTEHOOK_SRC}/third_party/lss
+    )
+    if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
+        target_include_directories(bytehook PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/shadowhook/shadowhook/src/main/cpp/include)
+        target_link_libraries(bytehook PRIVATE shadowhook)
+    endif ()
+    target_compile_options(bytehook PRIVATE
+        -Wno-unused-parameter
+        -Wno-unused-but-set-variable
+        -Wno-unused-variable
+        -Wno-unused-function
+    )
+endif ()
+
 if (ANDROID_ABI STREQUAL "riscv64")
     add_subdirectory(rv64hook)
         target_compile_options(rv64hook-static PRIVATE
