@@ -23,6 +23,13 @@ if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
         ${SHADOWHOOK_SRC}/common/*.c
         ${SHADOWHOOK_SRC}/third_party/*/*.c
     )
+    # The upstream sh_linker.c initializes the dlopen/dlclose linker monitor,
+    # which is unreliable in this statically linked loader's injection context;
+    # our overlay copy (verbatim upstream, with sh_linker_init() skipping that
+    # monitor) is compiled in its place. DO NOT TOUCH THIS.
+    list(REMOVE_ITEM SHADOWHOOK_SOURCES ${SHADOWHOOK_SRC}/sh_linker.c)
+    list(APPEND SHADOWHOOK_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/znn_shadowhook/sh_linker.c)
     add_library(shadowhook STATIC ${SHADOWHOOK_SOURCES})
     target_include_directories(shadowhook PRIVATE
         ${SHADOWHOOK_SRC}

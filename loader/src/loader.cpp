@@ -297,6 +297,7 @@ int g_bytehook_init_result = -1;
         LOGE("shadowhook_init failed: %s", shadowhook_to_errmsg(shadowhook_get_init_errno()));
         return false;
     }
+    LOGI("shadowhook engine ready (mode: unique)");
     return true;
 #else
     return false;
@@ -315,6 +316,7 @@ int g_bytehook_init_result = -1;
         LOGE("bytehook_init failed: %d", g_bytehook_init_result);
         return false;
     }
+    LOGI("bytehook engine ready (mode: manual)");
     return true;
 #else
     return false;
