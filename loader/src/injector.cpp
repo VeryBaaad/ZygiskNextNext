@@ -879,7 +879,7 @@ int ctlMain(const char* cmd, int nargs, char** args) {
             return 1;
         }
 
-\        pid_t pid = findInjectorPid();
+        pid_t pid = findInjectorPid();
         if (pid > 0) kill(pid, SIGHUP);
 
         printf("%s\n", buildHookConfigJson().c_str());
