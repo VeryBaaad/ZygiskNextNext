@@ -4,9 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches: [ master ]
-    tags: [ v* ]
+    tags: [ v*.*.* ]
   pull_request:
   merge_group:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -89,6 +92,18 @@ jobs:
             URL=$(python3 .github/scripts/telegram_url.py)
             curl -v "$URL" -F Release="@$Release" -F Debug="@$Debug"
           fi
+
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        if: github.ref_type == 'tag'
+        with:
+          generate_release_notes: true
+          working_directory: module/build/outputs/release
+          files: ${{ steps.prepareArtifact.outputs.releaseName }}.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload release
         uses: actions/upload-artifact@v7
