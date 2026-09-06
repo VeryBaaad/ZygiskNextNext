@@ -3,4 +3,4 @@ name=${moduleName}
 version=${versionName}
 versionCode=${versionCode}
 author=VeryBaaad
-description=Standalone Zygisk Next (ZN) module loader, injecting libloader.so into matching services.
+description=Standalone Zygisk Next module loader.

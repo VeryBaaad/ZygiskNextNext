@@ -117,6 +117,8 @@ constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
 constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
 constexpr uint32_t kCompanionCmdModules = 2;  // list modules for a process
 
+constexpr const char* kModuleId = "zygisknextsu";
+
 // Root implementation versions, collected once at startup.
 struct RootImplInfo {
     std::string kernel_su;
@@ -146,6 +148,8 @@ std::string g_module_dir;
 // injections, no module changes) performs zero disk writes.
 bool g_state_dirty = false;
 std::string g_last_state_json;
+std::string g_status_reason;
+std::string g_last_prop_text;
 
 // 0 = classic (trace init), 1 = compat (poll /proc). Chosen automatically in
 // main(): classic unless a Zygisk implementation is running or init is already
@@ -158,6 +162,8 @@ void on_sighup(int) { g_rescan = 1; }
 void collectTargets();  // defined below (uses readPropValue)
 
 std::string readPropValue(const std::string& moddir, const char* key);
+
+void applyPropText();
 
 void collectTargets() {
     std::map<std::string, ModuleInfo> next;
@@ -467,7 +473,131 @@ void writeStateSnapshot() {
     }
     if (rename(kStateTmp, kStateFile) == 0) {
         g_last_state_json = json;
+        applyPropText();
     }
+}
+
+std::string basePropDescription() {
+    std::string file = g_module_dir + "/module.prop.orig";
+    if (access(file.c_str(), R_OK) != 0) file = g_module_dir + "/module.prop";
+    FILE* f = fopen(file.c_str(), "re");
+    if (!f) return {};
+    char* line = nullptr;
+    size_t cap = 0;
+    std::string out;
+    while (getline(&line, &cap, f) > 0) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (l.size() > 12 && l.rfind("description=", 0) == 0) {
+            out = l.substr(12);
+            break;
+        }
+    }
+    free(line);
+    fclose(f);
+    return out;
+}
+
+std::string propStatusText() {
+    const std::string base = basePropDescription();
+    std::string text;
+    if (!g_status_reason.empty()) {
+        text = "[❌ " + g_status_reason + "]";
+    } else {
+        std::string status = "✅injector";
+        std::string impl;
+        std::string ver;
+        if (!g_system.root.kernel_su.empty()) {
+            impl = "KernelSU";
+            ver = g_system.root.kernel_su;
+        } else if (!g_system.root.magisk.empty()) {
+            impl = "Magisk";
+            ver = g_system.root.magisk;
+        } else if (!g_system.root.apatch.empty()) {
+            impl = "APatch";
+            ver = g_system.root.apatch;
+        }
+        if (!impl.empty()) status += ", Root: ✅" + impl + " (" + ver + ")";
+        if (g_mode == 1) status += ", ZC";
+        status += ", " + std::to_string(g_modules.size()) + " module(s) loaded";
+        text = "[" + status + "]";
+    }
+    if (base.empty()) return text;
+    return text + " " + base;
+}
+
+bool setPropOverride(const char* bin, const std::string& text) {
+    pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        setenv("KSU_MODULE", kModuleId, 1);
+        setenv("AP_MODULE", kModuleId, 1);
+        execl(bin, bin, "module", "config", "set", "override.description", text.c_str(), "--temp",
+              nullptr);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+bool writePropFile(const std::string& text) {
+    const std::string file = g_module_dir + "/module.prop";
+    const std::string tmp = file + ".tmp";
+    FILE* f = fopen(file.c_str(), "re");
+    if (!f) return false;
+    std::string out;
+    char* line = nullptr;
+    size_t cap = 0;
+    bool replaced = false;
+    ssize_t n;
+    while ((n = getline(&line, &cap, f)) > 0) {
+        std::string l(line, static_cast<size_t>(n));
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (!replaced && l.rfind("description=", 0) == 0) {
+            l = "description=" + text;
+            replaced = true;
+        }
+        out += l;
+        out += '\n';
+    }
+    free(line);
+    fclose(f);
+    if (!replaced) return false;
+    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    size_t off = 0;
+    while (off < out.size()) {
+        ssize_t w = write(fd, out.data() + off, out.size() - off);
+        if (w <= 0) break;
+        off += static_cast<size_t>(w);
+    }
+    fsync(fd);
+    close(fd);
+    if (off != out.size()) {
+        unlink(tmp.c_str());
+        return false;
+    }
+    if (rename(tmp.c_str(), file.c_str()) != 0) {
+        unlink(tmp.c_str());
+        return false;
+    }
+    return true;
+}
+
+void applyPropText() {
+    if (g_module_dir.empty()) return;
+    const std::string text = propStatusText();
+    if (text == g_last_prop_text) return;
+    bool applied = false;
+    if (access("/data/adb/ksud", X_OK) == 0) {
+        applied = setPropOverride("/data/adb/ksud", text);
+    }
+    if (!applied && access("/data/adb/apd", X_OK) == 0) {
+        applied = setPropOverride("/data/adb/apd", text);
+    }
+    if (!applied) applied = writePropFile(text);
+    if (applied) g_last_prop_text = text;
 }
 
 // Extract a balanced {…} or […] JSON value located after `marker`.
@@ -2361,11 +2491,13 @@ int main(int argc, char** argv) {
     // The label decides which SELinux rules the target needs for its own
     // module reads; the memfd dlopen itself needs `execute` on the memfd's
     // label.
+    int unreadable = 0;
     for (const char* p : {g_loader64.c_str(), g_loader32.c_str()}) {
         char ctx[256];
         ssize_t n = lgetxattr(p, "security.selinux", ctx, sizeof(ctx) - 1);
         if (access(p, R_OK) != 0) {
             LOGE("loader %s not readable: %s", p, strerror(errno));
+            ++unreadable;
         } else if (n < 0) {
             LOGE("loader %s: cannot read selinux label: %s", p, strerror(errno));
         } else {
@@ -2373,6 +2505,7 @@ int main(int argc, char** argv) {
             LOGI("loader %s label %s", p, ctx);
         }
     }
+    if (unreadable == 2) g_status_reason = "cannot read the loader";
 
     signal(SIGHUP, on_sighup);
     collectSystemInfo();
