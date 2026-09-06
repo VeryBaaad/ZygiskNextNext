@@ -29,6 +29,11 @@ else ()
         -Wno-macro-redefined
         -Wno-format-truncation
         -Wno-shift-count-overflow
+		-Wno-unused-parameter
+		-Wno-unused-but-set-variable
+		-Wno-unused-private-field
+		-Wno-unused-variable
+		-Wno-unused-function
     )
 endif ()
 
