@@ -26,7 +26,7 @@ export const zhCN: Dictionary = {
   'config.title': '配置',
   'config.inlineHook': 'Inline Hook 实现',
   'config.pltHook': 'PLT Hook 实现',
-  'config.reloadHint': '新启动的进程将使用所选方案，切换后重启目标进程后生效。',
+  'config.reloadHint': '新启动的进程将使用所选方案，切换后重启目标进程生效。',
   'config.saved': '已保存',
   'config.saveFailed': '保存失败',
 
