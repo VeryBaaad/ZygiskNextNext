@@ -641,14 +641,6 @@ void* api_symbolLookup(ZnSymbolResolver* resolver, const char* name, bool prefix
     if (s && size) *size = s->size;
 
     if (!prefix) {
-        // For exact lookups prefer the dynamic linker: it yields the true
-        // runtime address of any loaded exported symbol, while the ELF-parsed
-        // address can be wrong when the resolver's file image differs from the
-        // mapped image.
-        if (void* d = dlsym(RTLD_DEFAULT, name)) {
-            LOGI("symbolLookup %s -> %p (dlsym)", name, d);
-            return d;
-        }
         // Not exported: resolve against the runtime in-memory dynsym (finds
         // hidden symbols the linker does not expose).
         uintptr_t a = resolver->image->runtimeLookup(name, size);
