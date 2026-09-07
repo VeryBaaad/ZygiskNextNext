@@ -8,9 +8,7 @@ export const en: Record<string, string> = {
   'info.title': 'Basic Info',
   'info.rootImpl': 'Root Implementation',
   'info.rootImpl.none': 'None detected',
-  'info.zygiskCompat': 'Zygisk Compat Mode',
-  'info.zygiskCompat.on': 'Enabled',
-  'info.zygiskCompat.off': 'Disabled',
+  'info.mode': 'Current Mode',
   'info.unknown': 'Unknown',
 
   'modules.title': 'Modules',
@@ -24,8 +22,12 @@ export const en: Record<string, string> = {
   'config.title': 'Configuration',
   'config.inlineHook': 'Inline Hook implementation',
   'config.pltHook': 'PLT Hook implementation',
+  'config.mode': 'Tracking Mode',
+  'config.mode.auto': 'Auto',
+  'config.mode.ptrace': 'ptrace mode',
+  'config.mode.proc': 'proc mode',
   'config.reloadHint':
-    'Newly started processes use the selected engines. A restarting the target processes is required for the change to take effect.',
+    'Hook engines apply to newly started target processes; already-running processes must be restarted to pick them up. Tracking mode is applied when the injector starts: proc takes effect immediately, ptrace after a reboot.',
   'config.saved': 'Saved',
   'config.saveFailed': 'Failed to save configuration',
 
