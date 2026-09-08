@@ -306,7 +306,8 @@ int api_connectCompanion(void* handle) {
 // ZN API v4 Runtime: the HyperOS Rust Runtime (HYOS), for apps spawned by
 // /system_ext/bin/hyos_spawner. getRuntime() returns it only inside hyos_spawner;
 // it is a plain static flag, so forked children inherit the runtime and the
-// registered modules. Fork is observed via pthread_atfork.
+// registered modules. Children are detected via pthread_atfork and, when
+// possible, a fork PLT hook in the spawner's own image.
 
 constexpr int kMaxHyosModules = 4;
 
@@ -319,12 +320,26 @@ bool g_hyos_in_child = false;  // set by the atfork child handler
 bool g_hyos_fired = false;     // onAppSpecialized already delivered here
 
 // Saved originals of the hooked libselinux / libc entry points.
+typedef pid_t (*HyosForkFn)();
 typedef int (*HyosSetcontextFn)(uid_t uid, int is_system_server, const char* se_info,
                                 const char* pkg_name);
 typedef int (*HyosSetnameFn)(pthread_t thread, const char* name);
+HyosForkFn g_orig_fork = nullptr;
 HyosSetcontextFn g_orig_setcontext = nullptr;
 HyosSetnameFn g_orig_setname = nullptr;
 bool g_hyos_warned = false;  // log the "hooks unavailable" warning only once
+
+// The spawner's own image (its offset-0 mapping), used for PLT hooks. The
+// spawner's executable imports are resolved through its own PLT/GOT, so
+// hooking it there does not depend on which libselinux/libc copies RTLD_DEFAULT
+// would find. Flags record that a PLT attempt already happened: an import that
+// is absent from the executable now will never appear later, so retrying it on
+// every fork would only repeat the failure logs.
+dev_t g_hyos_spawner_dev = 0;
+ino_t g_hyos_spawner_inode = 0;
+uintptr_t g_hyos_spawner_base = 0;
+bool g_hyos_plt_fork_tried = false;
+bool g_hyos_plt_ctx_tried = false;
 
 // Captured specialization data (written in the child only; a plain static copy
 // is per-process, so siblings never see each other's values).
@@ -397,6 +412,14 @@ static void hyosAtForkChild() {
     g_cap_process_name[0] = '\0';
 }
 
+static pid_t hyosForkHook() {
+    pid_t res = g_orig_fork ? g_orig_fork() : -1;
+    if (res == 0) {
+        hyosAtForkChild();
+    }
+    return res;
+}
+
 // Defined below; forward-declared for the atfork prepare handler.
 static void hyosInstallHooks();
 
@@ -411,26 +434,77 @@ static void hyosAtForkPrepare() {
     }
 }
 
-// Inline-hook selinux_android_setcontext so that onAppSpecialized fires once
-// the child applies its app context (the last specialization step), and
-// pthread_setname_np so the exact process name can be captured. Both are
-// resolved at runtime: hyos_spawner links libselinux and calls them directly,
-// so RTLD_DEFAULT finds them once the spawner's libraries are loaded. Failure
-// is non-fatal: if a library is not loaded (or already hooked), the HYOS
-// callback simply never fires.
+// Hooking order for the HYOS entry points: first PLT hooks against the
+// spawner's own image — fork keeps the in-child markers set even when the
+// spawner's fork path does not run the atfork chain, and
+// selinux_android_setcontext is redirected through the imports the spawner
+// really uses instead of whatever RTLD_DEFAULT happens to resolve. Inline hooks
+// on runtime-resolved addresses stay as the fallback. Failure is non-fatal: if
+// a hook cannot be placed, the HYOS callback simply never fires.
+// Locate the spawner's own executable mapping (offset 0, backed by a file whose
+// path names hyos_spawner). PLT hooks are registered against its dev/inode.
+static void hyosFindSpawnerImage() {
+    if (g_hyos_spawner_inode != 0) return;
+    for (const auto& m : parseMaps("self")) {
+        if (m.offset != 0 || m.inode == 0) continue;
+        if (m.path.find("hyos_spawner") == std::string::npos) continue;
+        g_hyos_spawner_dev = m.dev;
+        g_hyos_spawner_inode = m.inode;
+        g_hyos_spawner_base = m.start;
+        LOGI("HYOS: spawner image dev=%llu inode=%llu base=%p",
+             static_cast<unsigned long long>(m.dev),
+             static_cast<unsigned long long>(m.inode), reinterpret_cast<void*>(m.start));
+        break;
+    }
+}
+
 static void hyosInstallHooks() {
+    hyosFindSpawnerImage();
+
+    if (g_hyos_spawner_inode != 0 && !g_hyos_plt_fork_tried) {
+        g_hyos_plt_fork_tried = true;
+        if (!g_orig_fork) {
+            void* backup = nullptr;
+            if (hook::pltHook(reinterpret_cast<void*>(g_hyos_spawner_base), "fork",
+                              reinterpret_cast<void*>(hyosForkHook), &backup)) {
+                g_orig_fork = reinterpret_cast<HyosForkFn>(backup);
+                LOGI("HYOS: PLT hooked fork");
+            }
+        }
+    }
+    if (g_hyos_spawner_inode != 0 && !g_hyos_plt_ctx_tried) {
+        g_hyos_plt_ctx_tried = true;
+        if (!g_orig_setcontext) {
+            void* backup = nullptr;
+            if (hook::pltHook(reinterpret_cast<void*>(g_hyos_spawner_base),
+                              "selinux_android_setcontext",
+                              reinterpret_cast<void*>(hyosSetcontextHook), &backup)) {
+                g_orig_setcontext = reinterpret_cast<HyosSetcontextFn>(backup);
+                LOGI("HYOS: PLT hooked selinux_android_setcontext");
+            }
+        }
+    }
+
     if (!g_orig_setcontext) {
         void* fn = dlsym(RTLD_DEFAULT, "selinux_android_setcontext");
+        if (!fn) {
+            void* h = dlopen("libselinux.so", RTLD_NOW);
+            if (h) fn = dlsym(h, "selinux_android_setcontext");
+        }
         if (fn && hook::inlineHook(fn, reinterpret_cast<void*>(hyosSetcontextHook),
                                    reinterpret_cast<void**>(&g_orig_setcontext))) {
-            LOGI("HYOS: hooked selinux_android_setcontext");
+            LOGI("HYOS: inline hooked selinux_android_setcontext");
         }
     }
     if (!g_orig_setname) {
         void* fn = dlsym(RTLD_DEFAULT, "pthread_setname_np");
+        if (!fn) {
+            void* h = dlopen("libc.so", RTLD_NOW);
+            if (h) fn = dlsym(h, "pthread_setname_np");
+        }
         if (fn && hook::inlineHook(fn, reinterpret_cast<void*>(hyosSetnameHook),
                                    reinterpret_cast<void**>(&g_orig_setname))) {
-            LOGI("HYOS: hooked pthread_setname_np");
+            LOGI("HYOS: inline hooked pthread_setname_np");
         }
     }
     if (!g_orig_setcontext && !g_hyos_warned) {
