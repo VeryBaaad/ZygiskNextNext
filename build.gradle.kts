@@ -24,7 +24,7 @@ val gitCommitHash = "git rev-parse --verify --short HEAD".execute().ifEmpty { "u
 // Module metadata, exposed to :loader and :module through rootProject.extra.
 val moduleId = "zygisknextsu"
 val moduleName = "Zygisk Next Next"
-val verName = "v0.6.1"
+val verName = "v0.7.0"
 val verCode = gitCommitCount
 val commitHash = gitCommitHash
 val minKsuVersion = 10940
