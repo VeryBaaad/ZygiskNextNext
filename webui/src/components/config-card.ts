@@ -16,6 +16,7 @@ const ENGINE_LABELS: Record<string, string> = {
   rv64hook: 'rv64hook',
   lsplt: 'LSPlt',
   bytehook: 'ByteHook',
+  xhook: 'xHook',
 };
 
 const ROW_LABEL_KEYS: Record<HookKind, string> = {

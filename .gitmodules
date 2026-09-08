@@ -13,3 +13,6 @@
 [submodule "loader/src/external/bytehook"]
 	path = loader/src/external/bytehook
 	url = https://github.com/bytedance/bhook.git
+[submodule "loader/src/external/xhook"]
+	path = loader/src/external/xhook
+	url = https://github.com/iqiyi/xHook.git

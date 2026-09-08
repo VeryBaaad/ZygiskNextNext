@@ -19,6 +19,8 @@ endif ()
 if (NOT ANDROID_ABI STREQUAL "riscv64")
     target_include_directories(loader PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/bytehook/bytehook/src/main/cpp/include)
+    target_include_directories(loader PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/xhook/libxhook/jni)
 endif ()
 
 set(LOADER_LINK_LIBS log elfutil lsplt_static)
@@ -32,6 +34,7 @@ if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
 endif()
 if (NOT ANDROID_ABI STREQUAL "riscv64")
     set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} bytehook)
+    set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} xhook)
 endif()
 target_link_libraries(loader PRIVATE ${LOADER_LINK_LIBS})
 

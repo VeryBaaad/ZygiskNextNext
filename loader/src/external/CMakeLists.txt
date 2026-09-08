@@ -74,6 +74,14 @@ if (NOT ANDROID_ABI STREQUAL "riscv64")
         -Wno-unused-variable
         -Wno-unused-function
     )
+
+    set(XHOOK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/xhook/libxhook/jni)
+    file(GLOB XHOOK_SOURCES ${XHOOK_SRC}/*.c)
+    add_library(xhook STATIC ${XHOOK_SOURCES})
+    target_compile_definitions(xhook PRIVATE
+        "PAGE_SIZE=sysconf(_SC_PAGESIZE)"
+        "PAGE_MASK=(~(sysconf(_SC_PAGESIZE)-1))"
+    )
 endif ()
 
 if (ANDROID_ABI STREQUAL "riscv64")

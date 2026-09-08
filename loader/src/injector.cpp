@@ -439,7 +439,7 @@ std::vector<std::string> pltHookOptions() {
     if (strcmp(runtimeAbi(), "riscv64") == 0) {
         return {"lsplt"};
     }
-    return {"lsplt", "bytehook"};
+    return {"lsplt", "bytehook", "xhook"};
 }
 
 std::vector<std::string> trackingModeOptions() {

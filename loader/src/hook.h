@@ -12,6 +12,7 @@
 #include <string>
 #include <string.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #ifndef __riscv
@@ -28,6 +29,7 @@
 
 #ifndef __riscv
 #include <bytehook.h>
+#include <xhook.h>
 #endif
 
 #include <lsplt.hpp>
@@ -35,7 +37,7 @@
 namespace znn::hook {
 
 enum class InlineEngine { kDobby, kShadowHook, kRv64Hook };
-enum class PltEngine { kLsplt, kByteHook };
+enum class PltEngine { kLsplt, kByteHook, kXHook };
 
 inline const char* inlineEngineName(InlineEngine e) {
     switch (e) {
@@ -50,6 +52,7 @@ inline const char* pltEngineName(PltEngine e) {
     switch (e) {
         case PltEngine::kLsplt: return "lsplt";
         case PltEngine::kByteHook: return "bytehook";
+        case PltEngine::kXHook: return "xhook";
     }
     return "unknown";
 }
@@ -83,6 +86,12 @@ inline bool pltEngineSupported(PltEngine e) {
         case PltEngine::kLsplt:
             return true;
         case PltEngine::kByteHook:
+#ifndef __riscv
+            return true;
+#else
+            return false;
+#endif
+        case PltEngine::kXHook:
 #ifndef __riscv
             return true;
 #else
@@ -126,6 +135,8 @@ inline bool parsePltEngine(const char* name, PltEngine* out) {
         e = PltEngine::kLsplt;
     } else if (strcmp(name, "bytehook") == 0) {
         e = PltEngine::kByteHook;
+    } else if (strcmp(name, "xhook") == 0) {
+        e = PltEngine::kXHook;
     } else {
         return false;
     }
@@ -171,6 +182,15 @@ inline int g_bytehook_init_result = -1;
 inline std::mutex g_bytehook_mutex;
 inline std::map<std::string, void*> g_bytehook_stubs;
 inline std::map<std::string, void*> g_bytehook_originals;
+
+struct XhookRecord {
+    std::string path;
+    std::string symbol;
+    void* replacement = nullptr;
+    void* original = nullptr;
+};
+inline std::mutex g_xhook_mutex;
+inline std::map<std::string, XhookRecord> g_xhook_records;
 #endif
 
 inline bool bytehookInit() {
@@ -422,6 +442,92 @@ inline bool bytehookHook(const std::string& caller_path, const char* symbol, voi
 #endif
 }
 
+#ifndef __riscv
+inline std::string xhookKey(const std::string& path, const char* symbol) {
+    std::string key = path;
+    key += '\x01';
+    key += symbol;
+    return key;
+}
+
+inline std::string xhookAnchorRegex(const std::string& path) {
+    std::string regex = "^";
+    regex.reserve(path.size() + 8);
+    for (const char c : path) {
+        switch (c) {
+            case '.': case '\\': case '+': case '*': case '?': case '^':
+            case '$': case '|': case '(': case ')': case '[': case ']':
+            case '{': case '}':
+                regex += '\\';
+                break;
+            default:
+                break;
+        }
+        regex += c;
+    }
+    regex += '$';
+    return regex;
+}
+
+inline bool xhookCommitLocked() {
+    xhook_clear();
+    for (auto& kv : g_xhook_records) {
+        XhookRecord& rec = kv.second;
+        const std::string regex = xhookAnchorRegex(rec.path);
+        if (xhook_register(regex.c_str(), rec.symbol.c_str(), rec.replacement,
+                           &rec.original) != 0) {
+            __android_log_print(ANDROID_LOG_ERROR, "ZNNloader",
+                                "pltHook %s: xhook_register failed", rec.symbol.c_str());
+            return false;
+        }
+    }
+    if (xhook_refresh(0) != 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "ZNNloader", "pltHook: xhook_refresh failed");
+        return false;
+    }
+    return true;
+}
+#endif
+
+inline bool xhookHook(const std::string& caller_path, const char* symbol, void* replacement,
+                      void** original) {
+#ifndef __riscv
+    if (caller_path.empty() || !symbol || !replacement) return false;
+
+    const std::string key = xhookKey(caller_path, symbol);
+    std::lock_guard<std::mutex> lk(g_xhook_mutex);
+    if (g_xhook_records.count(key)) {
+        __android_log_print(ANDROID_LOG_ERROR, "ZNNloader",
+                            "pltHook %s: %s is already hooked, unhook first", symbol,
+                            caller_path.c_str());
+        return false;
+    }
+
+    XhookRecord rec;
+    rec.path = caller_path;
+    rec.symbol = symbol;
+    rec.replacement = replacement;
+    rec.original = nullptr;
+    g_xhook_records[key] = std::move(rec);
+
+    if (!xhookCommitLocked() || g_xhook_records[key].original == nullptr) {
+        g_xhook_records.erase(key);
+        __android_log_print(ANDROID_LOG_ERROR, "ZNNloader",
+                            "pltHook %s: no matching relocation in %s", symbol,
+                            caller_path.c_str());
+        return false;
+    }
+    if (original) *original = g_xhook_records[key].original;
+    return true;
+#else
+    (void)caller_path;
+    (void)symbol;
+    (void)replacement;
+    (void)original;
+    return false;
+#endif
+}
+
 inline bool lspltHook(dev_t dev, ino_t inode, const char* symbol, void* replacement,
                       void** original) {
     void* backup = nullptr;
@@ -483,6 +589,12 @@ inline bool pltHook(void* base, const char* symbol, void* replacement, void** or
         case PltEngine::kByteHook:
 #ifndef __riscv
             return bytehookHook(entry->path, symbol, replacement, original);
+#else
+            return false;
+#endif
+        case PltEngine::kXHook:
+#ifndef __riscv
+            return xhookHook(entry->path, symbol, replacement, original);
 #else
             return false;
 #endif
