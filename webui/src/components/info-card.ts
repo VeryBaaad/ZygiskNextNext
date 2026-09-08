@@ -41,9 +41,11 @@ export class InfoCard extends HTMLElement {
     return entries.map((e) => `${e.name} (${e.version})`).join(', ');
   }
 
-  private compatText(): string {
+  private modeText(): string {
     if (!this.status?.running) return t('info.unknown');
-    return t(this.status.zygiskCompat ? 'info.zygiskCompat.on' : 'info.zygiskCompat.off');
+    if (this.status.mode === 'proc') return t('config.mode.proc');
+    if (this.status.mode === 'ptrace') return t('config.mode.ptrace');
+    return t('info.unknown');
   }
 
   private abiText(): string {
@@ -86,8 +88,8 @@ export class InfoCard extends HTMLElement {
           </div>
           <md-divider></md-divider>
           <div class="info-row">
-            <span class="info-label">${t('info.zygiskCompat')}</span>
-            <span class="info-value">${escapeHtml(this.compatText())}</span>
+            <span class="info-label">${t('info.mode')}</span>
+            <span class="info-value">${escapeHtml(this.modeText())}</span>
           </div>
         </div>
       </div>`;

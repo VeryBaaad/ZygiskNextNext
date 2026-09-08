@@ -113,6 +113,10 @@ constexpr const char* kStateFile = "/data/adb/zygisknextsu/znn_state.json";
 constexpr const char* kStateTmp = "/data/adb/zygisknextsu/znn_state.json.tmp";
 constexpr const char* kConfigFile = "/data/adb/zygisknextsu/config";
 
+constexpr const char* kModeAuto = "auto";
+constexpr const char* kModePtrace = "ptrace";
+constexpr const char* kModeProc = "proc";
+
 constexpr const char* kCompanionSock = "/data/adb/zygisknextsu/companion.sock";
 constexpr uint32_t kCompanionReqMagic = 0x5A4E4E43;  // "ZNNC"
 constexpr uint32_t kCompanionCmdSpawn = 1;    // spawn companion for lib_path
@@ -153,10 +157,12 @@ std::string g_last_state_json;
 std::string g_status_reason;
 std::string g_last_prop_text;
 
-// 0 = classic (trace init), 1 = compat (poll /proc). Chosen automatically in
-// main(): classic unless a Zygisk implementation is running or init is already
-// held by another tracer; classic also yields to a Zygisk that starts later.
+// 0 = ptrace mode (trace init), 1 = proc mode (poll /proc). Chosen in main():
+// auto by default, or forced by the `mode` config file key. auto runs ptrace
+// unless a Zygisk implementation is running or init is already held by another
+// tracer; auto also yields to a Zygisk that starts later.
 int g_mode = 0;
+std::string g_requested_mode = kModeAuto;
 
 volatile sig_atomic_t g_rescan = 0;
 void on_sighup(int) { g_rescan = 1; }
@@ -436,6 +442,10 @@ std::vector<std::string> pltHookOptions() {
     return {"lsplt", "bytehook"};
 }
 
+std::vector<std::string> trackingModeOptions() {
+    return {kModeAuto, kModePtrace, kModeProc};
+}
+
 bool optionIn(const std::vector<std::string>& options, const std::string& value) {
     for (const auto& o : options) {
         if (o == value) return true;
@@ -443,7 +453,7 @@ bool optionIn(const std::vector<std::string>& options, const std::string& value)
     return false;
 }
 
-bool readHookConfig(std::string* inline_hook, std::string* plt_hook) {
+bool readHookConfig(std::string* inline_hook, std::string* plt_hook, std::string* mode) {
     FILE* f = fopen(kConfigFile, "re");
     if (!f) return false;
     char* line = nullptr;
@@ -460,6 +470,8 @@ bool readHookConfig(std::string* inline_hook, std::string* plt_hook) {
             *inline_hook = val;
         } else if (key == "plt_hook") {
             *plt_hook = val;
+        } else if (key == "mode") {
+            *mode = val;
         }
     }
     free(line);
@@ -470,6 +482,7 @@ bool readHookConfig(std::string* inline_hook, std::string* plt_hook) {
 struct HookConfig {
     std::string inline_hook;
     std::string plt_hook;
+    std::string mode;
 };
 
 HookConfig effectiveHookConfig() {
@@ -478,22 +491,26 @@ HookConfig effectiveHookConfig() {
     const std::vector<std::string> plt = pltHookOptions();
     out.inline_hook = inl.front();
     out.plt_hook = plt.front();
+    out.mode = kModeAuto;
 
-    std::string inl_raw, plt_raw;
-    if (readHookConfig(&inl_raw, &plt_raw)) {
+    std::string inl_raw, plt_raw, mode_raw;
+    if (readHookConfig(&inl_raw, &plt_raw, &mode_raw)) {
         if (optionIn(inl, inl_raw)) out.inline_hook = inl_raw;
         if (optionIn(plt, plt_raw)) out.plt_hook = plt_raw;
+        if (optionIn(trackingModeOptions(), mode_raw)) out.mode = mode_raw;
     }
     return out;
 }
 
-bool writeHookConfigFile(const std::string& inline_hook, const std::string& plt_hook) {
+bool writeHookConfigFile(const std::string& inline_hook, const std::string& plt_hook,
+                         const std::string& mode) {
     mkdir(kStateDir, 0755);
 
     std::string content;
-    content.reserve(64);
+    content.reserve(96);
     content += "inline_hook=" + inline_hook + "\n";
     content += "plt_hook=" + plt_hook + "\n";
+    content += "mode=" + mode + "\n";
 
     const std::string tmp = std::string(kConfigFile) + ".tmp";
     int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -536,6 +553,8 @@ std::string buildHookConfigJson() {
     appendHookOptionJson(out, cfg.inline_hook, inlineHookOptions());
     out += ",\"pltHook\":";
     appendHookOptionJson(out, cfg.plt_hook, pltHookOptions());
+    out += ",\"mode\":";
+    appendHookOptionJson(out, cfg.mode, trackingModeOptions());
     out += "}";
     return out;
 }
@@ -568,9 +587,8 @@ std::string buildStateJson() {
     std::string out;
     out.reserve(2048);
     out += "{\"running\":true,\"pid\":" + std::to_string(getpid()) +
-           ",\"mode\":\"" + (g_mode == 1 ? "compat" : "classic") +
-           "\",\"zygiskCompat\":" + (g_mode == 1 ? "true" : "false") +
-           ",\"version\":\"" + jsonEscape(ZNN_VERSION) + "\",\"system\":{";
+           ",\"mode\":\"" + (g_mode == 1 ? kModeProc : kModePtrace) +
+           "\",\"version\":\"" + jsonEscape(ZNN_VERSION) + "\",\"system\":{";
     out += "\"kernel\":\"" + jsonEscape(g_system.kernel) + "\",\"sdk\":" + std::to_string(g_system.sdk) +
            ",\"abi\":\"" + jsonEscape(g_system.abi) + "\",\"abilist\":\"" + jsonEscape(g_system.abilist) +
            "\",\"root\":";
@@ -660,7 +678,7 @@ std::string propStatusText() {
             ver = g_system.root.apatch;
         }
         if (!impl.empty()) status += ", Root: ✅" + impl + " (" + ver + ")";
-        if (g_mode == 1) status += ", ZC";
+        if (g_mode == 1) status += ", PL";
         status += ", " + std::to_string(g_modules.size()) + " module(s) loaded";
         text = "[" + status + "]";
     }
@@ -816,10 +834,11 @@ pid_t findInjectorPid() {
 
 // WebUI control interface: `injector --ctl <cmd> [args]`. The read commands
 // (status/system/modules) echo the daemon-written snapshot as JSON; `config`
-// reports the hook engine pair; `config-set` persists a new pair and nudges the
-// daemon to refresh its snapshot; `rescan` asks the daemon to rescan modules.
-// This replaces the old znn_api.sh entirely: nothing is scanned on demand, the
-// daemon's recorded state is simply echoed back.
+// reports the hook engines and the tracking mode; `config-set` persists an
+// engine or the mode and nudges the daemon to refresh its snapshot; `rescan`
+// asks the daemon to rescan modules. This replaces the old znn_api.sh
+// entirely: nothing is scanned on demand, the daemon's recorded state is
+// simply echoed back.
 int ctlMain(const char* cmd, int nargs, char** args) {
     std::string state;
     {
@@ -850,7 +869,7 @@ int ctlMain(const char* cmd, int nargs, char** args) {
 
     if (strcmp(cmd, "config-set") == 0) {
         if (nargs != 2) {
-            fprintf(stderr, "usage: injector --ctl config-set <inline|plt> <engine>\n");
+            fprintf(stderr, "usage: injector --ctl config-set <inline|plt|mode> <value>\n");
             return 1;
         }
         const std::string kind = args[0];
@@ -858,15 +877,18 @@ int ctlMain(const char* cmd, int nargs, char** args) {
 
         const bool is_inline = kind == "inline";
         const bool is_plt = kind == "plt";
-        const std::vector<std::string> options = is_inline ? inlineHookOptions()
-                                                           : is_plt ? pltHookOptions()
-                                                                    : std::vector<std::string>();
-        if (!is_inline && !is_plt) {
-            fprintf(stderr, "usage: injector --ctl config-set <inline|plt> <engine>\n");
+        const bool is_mode = kind == "mode";
+        const std::vector<std::string> options =
+            is_inline ? inlineHookOptions()
+                      : is_plt ? pltHookOptions()
+                               : is_mode ? trackingModeOptions()
+                                         : std::vector<std::string>();
+        if (!is_inline && !is_plt && !is_mode) {
+            fprintf(stderr, "usage: injector --ctl config-set <inline|plt|mode> <value>\n");
             return 1;
         }
         if (!optionIn(options, value)) {
-            fprintf(stderr, "invalid %s engine \"%s\" for this device\n", kind.c_str(),
+            fprintf(stderr, "invalid %s value \"%s\" for this device\n", kind.c_str(),
                     value.c_str());
             return 1;
         }
@@ -874,7 +896,8 @@ int ctlMain(const char* cmd, int nargs, char** args) {
         const HookConfig current = effectiveHookConfig();
         const std::string inline_value = is_inline ? value : current.inline_hook;
         const std::string plt_value = is_plt ? value : current.plt_hook;
-        if (!writeHookConfigFile(inline_value, plt_value)) {
+        const std::string mode_value = is_mode ? value : current.mode;
+        if (!writeHookConfigFile(inline_value, plt_value, mode_value)) {
             fprintf(stderr, "cannot write %s\n", kConfigFile);
             return 1;
         }
@@ -892,8 +915,6 @@ int ctlMain(const char* cmd, int nargs, char** args) {
         if (extractScalar(state, "pid", &spid)) pid = static_cast<pid_t>(strtol(spid.c_str(), nullptr, 10));
         if (extractScalar(state, "mode", &zmode) && zmode.size() >= 2 &&
             zmode.front() == '"' && zmode.back() == '"') {
-            // extractScalar returns the raw JSON token including the quotes;
-            // strip them so the field is emitted as a single-quoted string.
             zmode = zmode.substr(1, zmode.size() - 2);
         }
         const bool alive = isInjectorAlive(pid);
@@ -905,10 +926,10 @@ int ctlMain(const char* cmd, int nargs, char** args) {
             }
         }
         const bool running = pid > 0 && isInjectorAlive(pid);
-        const bool compat = running && zmode.find("compat") != std::string::npos;
-        printf("{\"running\":%s,\"pid\":%d,\"zygiskCompat\":%s,\"mode\":\"%s\"}\n",
-               running ? "true" : "false", running ? pid : 0, compat ? "true" : "false",
-               zmode.empty() ? "unknown" : zmode.c_str());
+        const bool mode_known = zmode == kModePtrace || zmode == kModeProc;
+        printf("{\"running\":%s,\"pid\":%d,\"mode\":\"%s\"}\n",
+               running ? "true" : "false", running ? pid : 0,
+               running && mode_known ? zmode.c_str() : "unknown");
         return 0;
     }
 
@@ -934,8 +955,8 @@ int ctlMain(const char* cmd, int nargs, char** args) {
     }
 
     fprintf(stderr,
-            "usage: injector --ctl <status|system|modules|config|config-set <inline|plt> "
-            "<engine>|rescan>\n");
+            "usage: injector --ctl <status|system|modules|config|config-set <inline|plt|mode> "
+            "<value>|rescan>\n");
     return 1;
 }
 
@@ -1883,7 +1904,7 @@ void attachChild(pid_t child) {
     g_tracees[child] = Tracee{child, STATE_TRACED, Arch::kUnknown, 0, {0}, 0, {}, {}, {}, {}};
 }
 
-// Target-spawn discovery for compat mode (no ptrace on init)
+// Target-spawn discovery for proc mode (init is never traced)
 
 // Targets that were already injected (or missed and given up on) for this pid.
 std::set<pid_t> g_done;
@@ -2078,7 +2099,7 @@ void observeTarget(pid_t pid, const std::string& exe) {
     // kRetry: keep the candidate; trySeizeTarget is cheap, retry next poll.
 }
 
-// Fast path (compat mode): full /proc scan, parent-agnostic. Runs every poll
+// Fast path (proc mode): full /proc scan, parent-agnostic. Runs every poll
 // (~2 ms). New pids are evaluated once; tracked pre-exec forks and targets
 // held by another tracer are re-checked every scan.
 void pollProcesses() {
@@ -2211,6 +2232,52 @@ bool zygiskPresent() {
     }
     closedir(d);
     return found;
+}
+
+bool trySeizeInit() {
+    LOGI("tracing init (pid 1)");
+    if (ptrace(PTRACE_SEIZE, 1, nullptr, reinterpret_cast<void*>(kPtraceOpts)) != 0) {
+        LOGW("cannot seize init: %s — another tracer holds pid 1; using proc mode "
+             "(poll /proc) instead", strerror(errno));
+        return false;
+    }
+    g_tracees[1] = Tracee{1, STATE_TRACED, Arch::kUnknown, 0, {0}, 0, {}, {}, {}, {}};
+    LOGI("successfully seized init");
+    return true;
+}
+
+void selectMode() {
+    g_requested_mode = effectiveHookConfig().mode;
+    if (g_requested_mode == kModeProc) {
+        LOGI("tracking mode forced to proc (poll /proc); init is never traced");
+        g_mode = 1;
+    } else if (g_requested_mode == kModePtrace) {
+        LOGI("tracking mode forced to ptrace (trace init)");
+        g_mode = trySeizeInit() ? 0 : 1;
+    } else {
+        if (zygiskPresent()) {
+            LOGI("Zygisk implementation detected; using proc mode (poll /proc)");
+            g_mode = 1;
+        } else {
+            g_mode = trySeizeInit() ? 0 : 1;
+        }
+    }
+}
+
+void applyRequestedMode() {
+    const std::string want = effectiveHookConfig().mode;
+    if (want == g_requested_mode) return;
+    g_requested_mode = want;
+    if (want == kModeProc && g_mode == 0) {
+        ptrace(PTRACE_DETACH, 1, nullptr, nullptr);
+        g_tracees.erase(1);
+        g_mode = 1;
+        g_state_dirty = true;
+        LOGW("tracking mode changed to proc; detached init and switched to polling /proc");
+    } else if (want != kModeProc && g_mode == 1) {
+        LOGW("tracking mode %s only applies on the next injector start; staying in proc mode",
+             want.c_str());
+    }
 }
 
 void handleEvent(pid_t pid, int status) {
@@ -2674,8 +2741,8 @@ void acceptCompanionRequests(int listen_fd) {
 
 int main(int argc, char** argv) {
     // WebUI control mode: `injector --ctl <status|system|modules|config|
-    // config-set <inline|plt> <engine>|rescan>`. Runs as a short-lived client
-    // that echoes the daemon's state snapshot (or updates the hook config); it
+    // config-set <inline|plt|mode> <value>|rescan>`. Runs as a short-lived
+    // client that echoes the daemon's state snapshot (or updates the config); it
     // never scans /proc on demand and needs no module-dir argument.
     if (argc > 2 && strcmp(argv[1], "--ctl") == 0) {
         return ctlMain(argv[2], argc - 3, argv + 3);
@@ -2731,25 +2798,7 @@ int main(int argc, char** argv) {
 
     const int companion_listen_fd = createCompanionSocket();
 
-    // Choose the mode automatically. Classic (trace init) is deterministic but
-    // incompatible with Zygisk implementations, which hold pid 1 for their
-    // whole session (Linux permits only one tracer per process). If a Zygisk
-    // daemon is already running, or init is already held, use compat mode
-    // (poll /proc, never touch init).
-    if (zygiskPresent()) {
-        LOGI("will enable zygisk compat mode (poll /proc)");
-        g_mode = 1;
-    } else {
-        LOGI("tracing init (pid 1)");
-        if (ptrace(PTRACE_SEIZE, 1, nullptr, reinterpret_cast<void*>(kPtraceOpts)) != 0) {
-            LOGW("cannot seize init: %s — another tracer holds pid 1; "
-                 "using compat mode (poll /proc) instead", strerror(errno));
-            g_mode = 1;
-        } else {
-            g_tracees[1] = Tracee{1, STATE_TRACED, Arch::kUnknown, 0, {0}, 0, {}, {}, {}, {}};
-            LOGI("successfully seized init");
-        }
-    }
+    selectMode();
 
     time_t last_rescan = 0;
     uint64_t last_zygisk_check = 0;
@@ -2764,6 +2813,7 @@ int main(int argc, char** argv) {
         if (g_rescan) {
             g_rescan = 0;
             collectTargets();
+            applyRequestedMode();
             last_rescan = time(nullptr);
             g_state_dirty = true;
             LOGI("rescanned znn targets (%zu)", g_targets.size());
@@ -2774,19 +2824,20 @@ int main(int argc, char** argv) {
         acceptCompanionRequests(companion_listen_fd);
 
         if (g_mode == 1) {
-            // Compat mode: poll every ~2 ms for newly spawned targets.
+            // Proc mode: poll every ~2 ms for newly spawned targets.
             pollProcesses();
-        } else if (nowMs() - last_zygisk_check >= 5000) {
-            // Classic mode: a Zygisk implementation may have started after us
-            // and is now failing to seize init. Yield init to it and switch
-            // to compat mode so both frameworks keep working.
+        } else if (g_requested_mode == kModeAuto && nowMs() - last_zygisk_check >= 5000) {
+            // Auto mode: a Zygisk implementation may have started after us and
+            // is now failing to seize init. Yield init to it and switch to
+            // proc mode so both frameworks keep working.
             last_zygisk_check = nowMs();
             if (zygiskPresent()) {
                 LOGW("Zygisk implementation started while tracing init; yielding init and "
-                     "switching to compat mode");
+                     "switching to proc mode (poll /proc)");
                 ptrace(PTRACE_DETACH, 1, nullptr, nullptr);
                 g_tracees.erase(1);
                 g_mode = 1;
+                g_state_dirty = true;
             }
         }
 

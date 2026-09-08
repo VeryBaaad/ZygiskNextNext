@@ -10,9 +10,7 @@ export const zhCN: Dictionary = {
   'info.title': '基本信息',
   'info.rootImpl': 'Root实现',
   'info.rootImpl.none': '未检测到',
-  'info.zygiskCompat': 'Zygisk 兼容模式',
-  'info.zygiskCompat.on': '已启用',
-  'info.zygiskCompat.off': '未启用',
+  'info.mode': '当前模式',
   'info.unknown': '未知',
 
   'modules.title': '模块',
@@ -26,7 +24,12 @@ export const zhCN: Dictionary = {
   'config.title': '配置',
   'config.inlineHook': 'Inline Hook 实现',
   'config.pltHook': 'PLT Hook 实现',
-  'config.reloadHint': '新启动的进程将使用所选方案，切换后重启目标进程生效。',
+  'config.mode': '跟踪模式',
+  'config.mode.auto': '自动',
+  'config.mode.ptrace': 'ptrace mode',
+  'config.mode.proc': 'proc mode',
+  'config.reloadHint':
+    'Hook 引擎对新启动的目标进程生效，已运行的进程需重启后才会使用新引擎。跟踪模式在注入器启动时生效：proc 立即生效，ptrace 需重启后生效。',
   'config.saved': '已保存',
   'config.saveFailed': '保存失败',
 
