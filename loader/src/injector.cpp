@@ -1276,14 +1276,31 @@ struct Tracee {
 
 std::map<pid_t, Tracee> g_tracees;
 
+std::string stripDeletedSuffix(std::string p) {
+    constexpr char kDeleted[] = " (deleted)";
+    constexpr size_t kDeletedLen = sizeof(kDeleted) - 1;
+    if (p.size() > kDeletedLen && p.compare(p.size() - kDeletedLen, kDeletedLen, kDeleted) == 0) {
+        p.resize(p.size() - kDeletedLen);
+    }
+    return p;
+}
+
 std::string readExePath(pid_t pid) {
     char link[64];
     snprintf(link, sizeof(link), "/proc/%d/exe", pid);
     char buf[PATH_MAX];
     ssize_t n = readlink(link, buf, sizeof(buf) - 1);
     if (n <= 0) return {};
-    buf[n] = '\0';
-    return buf;
+    return stripDeletedSuffix(std::string(buf, static_cast<size_t>(n)));
+}
+
+bool mapPathEqualsExe(const std::string& map_path, const std::string& exe) {
+    if (map_path == exe) return true;
+    constexpr char kDeleted[] = " (deleted)";
+    constexpr size_t kDeletedLen = sizeof(kDeleted) - 1;
+    return map_path.size() == exe.size() + kDeletedLen &&
+           map_path.compare(0, exe.size(), exe) == 0 &&
+           map_path.compare(exe.size(), kDeletedLen, kDeleted) == 0;
 }
 
 bool findLibrary(pid_t pid, const char* basename64, const char* basename32, bool is64,
@@ -1590,7 +1607,7 @@ void handleExec(pid_t pid, Tracee& t) {
     snprintf(p, sizeof(p), "%d", pid);
     uintptr_t base = 0;
     for (const auto& m : parseMaps(p)) {
-        if (m.offset == 0 && m.path == exe) {
+        if (m.offset == 0 && mapPathEqualsExe(m.path, exe)) {
             base = m.start;
             break;
         }
@@ -1951,7 +1968,7 @@ bool isPreExecFork(const std::string& exe) {
 // the process already passed entry and injection would be too late.
 bool pcInExeText(pid_t pid, const std::string& exe, uintptr_t pc) {
     for (const auto& m : parseMaps(std::to_string(pid))) {
-        if (m.path != exe) continue;
+        if (!mapPathEqualsExe(m.path, exe)) continue;
         if (!(m.perms & PROT_EXEC)) continue;
         if (pc >= m.start && pc < m.end) return true;
     }
@@ -1988,7 +2005,7 @@ SeizeResult trySeizeTarget(pid_t pid, const std::string& exe) {
     uintptr_t base = 0;
     bool has_loader = false;
     for (const auto& m : parseMaps(std::to_string(pid))) {
-        if (m.offset == 0 && m.path == exe) {
+        if (m.offset == 0 && mapPathEqualsExe(m.path, exe)) {
             base = m.start;
         }
         if (m.path.find("libloader.so") != std::string::npos ||
