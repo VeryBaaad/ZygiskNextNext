@@ -58,7 +58,7 @@ Create a Pull Request.
 - [ZygiskNext](https://github.com/Dr-TSNG/ZygiskNext): OG implementation
 - [Dobby](https://github.com/jmpews/Dobby), [rv64hook](https://github.com/eirv/riscv64-inline-hook) and [ShadowHook](https://github.com/bytedance/android-inline-hook): used for inline hooking
 - [LSPlt](https://github.com/LSPosed/LSPlt), [ByteHook](https://github.com/bytedance/bhook) and [xHook](https://github.com/iqiyi/xHook): uesd for plt hooking
-- [LZMA SDK](https://www.7-zip.org/sdk.html): ELF Parser
+- [LZMA SDK](https://www.7-zip.org/sdk.html): `.gnu_debugdata` decompressor
 
 ## License
 
