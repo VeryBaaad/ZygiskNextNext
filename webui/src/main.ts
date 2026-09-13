@@ -88,8 +88,8 @@ function render(): void {
 
   if (cards.status) content.append(new StatusCard(cards.status));
   if (cards.system) content.append(new InfoCard(cards.system, cards.status));
-  if (cards.config) content.append(new ConfigCard(cards.config));
   if (cards.modules) content.append(new ModulesCard(cards.modules));
+  if (cards.config) content.append(new ConfigCard(cards.config));
 
   if (!cards.status && !cards.system && !cards.modules && !cards.config) {
     content.append(new EmptyState());
