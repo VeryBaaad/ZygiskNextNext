@@ -862,6 +862,17 @@ int ctlMain(const char* cmd, int nargs, char** args) {
         return 0;
     }
 
+    if (strcmp(cmd, "exit") == 0) {
+        pid_t pid = findInjectorPid();
+        if (pid <= 0) {
+            printf("injector is not running\n");
+            return 1;
+        }
+        kill(pid, SIGTERM);
+        printf("injector (%d) exited\n", pid);
+        return 0;
+    }
+    
     if (strcmp(cmd, "config") == 0) {
         printf("%s\n", buildHookConfigJson().c_str());
         return 0;
