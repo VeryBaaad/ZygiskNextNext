@@ -92,10 +92,11 @@ if [ "$KSU" ]; then
 fi
 
 ui_print "- Extracting module files"
-extract "$ZIPFILE" 'module.prop'     "$MODPATH"
+extract "$ZIPFILE" 'module.prop'               "$MODPATH"
 cp "$MODPATH/module.prop" "$MODPATH/module.prop.orig"
-extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
+extract "$ZIPFILE" 'post-fs-data.sh'           "$MODPATH"
 mv "$TMPDIR/sepolicy.rule" "$MODPATH"
+extract "$ZIPFILE" 'emulated-soft-reboot.sh'   "$MODPATH"
 
 mkdir "$MODPATH/bin"
 mkdir "$MODPATH/lib"
