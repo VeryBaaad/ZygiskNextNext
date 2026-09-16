@@ -25,7 +25,10 @@ To comply with this and maintain legal and technical independence, you must adhe
 ## ARCHITECTURE OVERVIEW
 
 - loader/: The core native component. Responsible for process injection, module loading, and hook management using Dobby (inline hooking) or rv64hook (inline hooking for riscv64), and LSPlt (PLT hooking).
-- module/: The Magisk / KernelSU / APatch module wrapper. Handles installation, environment setup, permission management, and status reporting.
+- injector/: The standalone injector executable shipped as bin/<abi>/injector. NOT part of loader/ and never built by it; it has its own Gradle module and CMake project.
+- includes/: Native code shared by :loader and :injector (ZygiskNext API header, ELF symbol resolver, /proc maps helpers).
+- external/: (repository root) Third-party sources used by more than one native module (currently the LZMA SDK). Dependencies of a single module stay in that module's src/external/.
+- module/: The Magisk / KernelSU / APatch module wrapper. Handles installation, environment setup, permission management, and status reporting. It collects the loader library and the injector binary from their own Gradle modules when building the zip.
 - webui/: Web-based user interface components (KernelSU WebUI) for module management and configuration.
 
 ## DEVELOPMENT GUIDELINES

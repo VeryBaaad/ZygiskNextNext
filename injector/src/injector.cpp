@@ -17,8 +17,8 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-#include "utils/elf_util.h"
-#include "include/zygisk_next_api.h"
+#include "maps_util.h"
+#include "zygisk_next_api.h"
 
 #include <android/dlext.h>
 #include <android/log.h>

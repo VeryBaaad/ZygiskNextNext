@@ -17,8 +17,9 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-#include "utils/elf_util.h"
-#include "include/zygisk_next_api.h"
+#include "elf_util.h"
+#include "maps_util.h"
+#include "zygisk_next_api.h"
 
 #include "hook.h"
 

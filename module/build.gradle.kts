@@ -51,6 +51,7 @@ androidComponents.onVariants { variant ->
         group = "module"
         dependsOn(
             ":loader:assemble$variantCapped",
+            ":injector:assemble$variantCapped",
             ":webui:buildWebui",
         )
         into(moduleDir)
@@ -87,30 +88,32 @@ androidComponents.onVariants { variant ->
         val cmakeBuildType = if (buildTypeLowered == "debug") "Debug" else "RelWithDebInfo"
 
         doLast {
-            val objRoot = project(":loader").layout.buildDirectory
-                .dir("intermediates/cxx/$cmakeBuildType").get().asFile
-            val hashDir = objRoot.listFiles()
-                ?.filter { it.isDirectory && File(it, "obj").isDirectory }
-                ?.maxByOrNull { it.lastModified() }
-                ?: return@doLast
-            val objDir = File(hashDir, "obj")
-
             val dstRoot = moduleDir.get().asFile
-            objDir.listFiles()?.forEach { abiDir ->
-                if (!abiDir.isDirectory) return@forEach
-                val abi = abiDir.name
 
-                File(abiDir, "libloader.so").takeIf { it.isFile }?.let { so ->
-                    val libDir = File(dstRoot, "lib/$abi")
-                    libDir.mkdirs()
-                    so.copyTo(File(libDir, "libloader.so"), overwrite = true)
-                }
-                File(abiDir, "injector").takeIf { it.isFile }?.let { exe ->
-                    val binDir = File(dstRoot, "bin/$abi")
-                    binDir.mkdirs()
-                    exe.copyTo(File(binDir, "injector"), overwrite = true)
+            // CMake output directory of a module, holding one subdirectory per
+            // ABI (e.g. <obj>/<abi>/libloader.so, <obj>/<abi>/injector).
+            fun cmakeObjDir(projectPath: String): File? {
+                val cxxDir = project(projectPath).layout.buildDirectory
+                    .dir("intermediates/cxx/$cmakeBuildType").get().asFile
+                val hashDir = cxxDir.listFiles()
+                    ?.filter { it.isDirectory && File(it, "obj").isDirectory }
+                    ?.maxByOrNull { it.lastModified() }
+                    ?: return null
+                return File(hashDir, "obj")
+            }
+
+            fun collectArtifacts(projectPath: String, artifactName: String, destOf: (String) -> File) {
+                cmakeObjDir(projectPath)?.listFiles()?.forEach { abiDir ->
+                    val artifact = File(abiDir, artifactName)
+                    if (!abiDir.isDirectory || !artifact.isFile) return@forEach
+                    val dest = destOf(abiDir.name)
+                    dest.parentFile.mkdirs()
+                    artifact.copyTo(dest, overwrite = true)
                 }
             }
+
+            collectArtifacts(":loader", "libloader.so") { abi -> File(dstRoot, "lib/$abi/libloader.so") }
+            collectArtifacts(":injector", "injector") { abi -> File(dstRoot, "bin/$abi/injector") }
         }
 
         doLast {

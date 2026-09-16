@@ -2,6 +2,10 @@ plugins {
     alias(libs.plugins.agp.lib)
 }
 
+val verCode: Int = rootProject.extra["verCode"] as Int
+val verName: String = rootProject.extra["verName"] as String
+val commitHash: String = rootProject.extra["commitHash"] as String
+
 @Suppress("UNCHECKED_CAST")
 val defaultCFlags: Array<String> = rootProject.extra["defaultCFlags"] as Array<String>
 
@@ -11,9 +15,11 @@ val releaseLinkerFlags: String = rootProject.extra["releaseLinkerFlags"] as Stri
 val ccachePath: String? = rootProject.extra["ccachePath"] as String?
 
 ccachePath?.let {
-    println("loader: Use ccache: $it")
+    println("injector: Use ccache: $it")
 }
 
+// :injector only builds an executable; it is never packaged as an Android
+// library. The :module script picks the binary up from the CMake output.
 android {
     androidResources {
         enable = false
@@ -29,7 +35,6 @@ android {
     defaultConfig {
         externalNativeBuild.cmake {
             arguments += "-DANDROID_STL=c++_static"
-            arguments += "-DLSPLT_STANDALONE=OFF"
             cFlags("-std=c18", *defaultCFlags)
             cppFlags("-std=c++20", *defaultCFlags)
             ccachePath?.let {
@@ -40,12 +45,17 @@ android {
     }
 
     buildTypes {
+        debug {
+            externalNativeBuild.cmake {
+                arguments += "-DZNN_VERSION=$verName-$verCode-$commitHash-debug"
+            }
+        }
         release {
             externalNativeBuild.cmake {
                 cFlags += releaseFlags
                 cppFlags += releaseFlags
-                arguments += "-DCMAKE_SHARED_LINKER_FLAGS=$releaseLinkerFlags"
                 arguments += "-DCMAKE_EXE_LINKER_FLAGS=$releaseLinkerFlags"
+                arguments += "-DZNN_VERSION=$verName-$verCode-$commitHash-release"
             }
         }
     }
