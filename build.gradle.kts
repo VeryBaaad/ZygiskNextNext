@@ -43,8 +43,8 @@ extra.set("minKsudVersion", minKsudVersion)
 extra.set("minMagiskVersion", minMagiskVersion)
 extra.set("minApatchVersion", minApatchVersion)
 
-// Native build settings shared by every module that compiles C/C++ (:loader and
-// :injector), so that the binaries shipped in the same zip never drift apart.
+// Native build settings of the C/C++ module (:loader). :injector is a Rust
+// crate and configures its own build through cargo (see injector/Cargo.toml).
 val defaultCFlags = arrayOf(
     "-Wall", "-Wextra",
     "-fno-rtti", "-fno-exceptions",
@@ -82,6 +82,11 @@ val androidCompileSdkVersion = 37
 val androidCompileSdkMinorVersion = 1
 val androidBuildToolsVersion = "37.0.0"
 val androidCompileNdkVersion = "29.0.13599879"
+
+// :injector is a Rust crate without an Android plugin, so it configures itself
+// from these instead of from AGP's DSL.
+extra.set("androidMinSdkVersion", androidMinSdkVersion)
+extra.set("androidNdkVersion", androidCompileNdkVersion)
 
 tasks.register("Delete", Delete::class) {
     delete(layout.buildDirectory)

@@ -90,8 +90,8 @@ androidComponents.onVariants { variant ->
         doLast {
             val dstRoot = moduleDir.get().asFile
 
-            // CMake output directory of a module, holding one subdirectory per
-            // ABI (e.g. <obj>/<abi>/libloader.so, <obj>/<abi>/injector).
+            // CMake output directory of the loader, holding one subdirectory
+            // per ABI (e.g. <obj>/<abi>/libloader.so).
             fun cmakeObjDir(projectPath: String): File? {
                 val cxxDir = project(projectPath).layout.buildDirectory
                     .dir("intermediates/cxx/$cmakeBuildType").get().asFile
@@ -113,7 +113,18 @@ androidComponents.onVariants { variant ->
             }
 
             collectArtifacts(":loader", "libloader.so") { abi -> File(dstRoot, "lib/$abi/libloader.so") }
-            collectArtifacts(":injector", "injector") { abi -> File(dstRoot, "bin/$abi/injector") }
+
+            // :injector is a Rust crate; its Gradle build leaves one binary per
+            // ABI under <injector>/build/rust/<variant>/<abi>/injector.
+            val injectorVariants = project(":injector").layout.buildDirectory
+                .dir("rust/$variantLowered").get().asFile
+            injectorVariants.listFiles()?.forEach { abiDir ->
+                val artifact = File(abiDir, "injector")
+                if (!abiDir.isDirectory || !artifact.isFile) return@forEach
+                val destination = File(dstRoot, "bin/${abiDir.name}/injector")
+                destination.parentFile.mkdirs()
+                artifact.copyTo(destination, overwrite = true)
+            }
         }
 
         doLast {

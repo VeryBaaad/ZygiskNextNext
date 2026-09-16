@@ -38,6 +38,10 @@ Note: debug builds are only available in Github Actions.
 
 Read the [ZygiskNextModuleSample](https://github.com/5ec1cff/ZygiskNextModuleSample)
 
+### Injector
+
+`injector/` is a standalone Rust crate: a root daemon that injects the loader into target processes, plus the control client the WebUI drives (`injector --ctl`). It is built by `:injector` through cargo (`cargo ndk` for the four classic ABIs, nightly `-Z build-std` for riscv64), and every `unsafe` block lives under `injector/src/sys/`.
+
 ### HyperOS Runtime
 
 Look this: [hyos_runtime.md](https://github.com/Dr-TSNG/ZygiskNext/blob/main/docs/hyos_runtime.md)

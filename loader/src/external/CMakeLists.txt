@@ -112,3 +112,5 @@ else ()
 		-Wno-unused-function
     )
 endif ()
+
+add_subdirectory(lzma)
