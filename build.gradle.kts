@@ -1,4 +1,5 @@
 import com.android.build.api.dsl.LibraryExtension
+import org.gradle.internal.os.OperatingSystem
 
 plugins {
     alias(libs.plugins.agp.lib) apply false
@@ -41,6 +42,39 @@ extra.set("minKsuVersion", minKsuVersion)
 extra.set("minKsudVersion", minKsudVersion)
 extra.set("minMagiskVersion", minMagiskVersion)
 extra.set("minApatchVersion", minApatchVersion)
+
+// Native build settings shared by every module that compiles C/C++ (:loader and
+// :injector), so that the binaries shipped in the same zip never drift apart.
+val defaultCFlags = arrayOf(
+    "-Wall", "-Wextra",
+    "-fno-rtti", "-fno-exceptions",
+    "-fno-stack-protector", "-fomit-frame-pointer",
+    "-Wno-builtin-macro-redefined", "-D__FILE__=__FILE_NAME__"
+)
+
+val releaseCFlags = arrayOf(
+    "-Oz", "-flto",
+    "-Wno-unused", "-Wno-unused-parameter",
+    "-fvisibility=hidden", "-fvisibility-inlines-hidden",
+    "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
+)
+
+val releaseLinkerFlags = "-Wl,--exclude-libs,ALL -Wl,--gc-sections -Wl,--strip-all"
+
+// ccache is used whenever it is available on PATH, or through -Pccache.path=...
+val ccachePath: String? = run {
+    val executable = "ccache" + if (OperatingSystem.current().isWindows) ".exe" else ""
+    System.getenv("PATH")?.split(File.pathSeparator).orEmpty()
+        .map { File(it, executable) }
+        .firstOrNull { it.exists() }
+        ?.absolutePath
+        ?: findProperty("ccache.path") as? String
+}
+
+extra.set("defaultCFlags", defaultCFlags)
+extra.set("releaseCFlags", releaseCFlags)
+extra.set("releaseLinkerFlags", releaseLinkerFlags)
+extra.set("ccachePath", ccachePath)
 
 // Android build configuration (used only by this script).
 val androidMinSdkVersion = 26

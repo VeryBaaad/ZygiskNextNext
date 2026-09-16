@@ -19,6 +19,7 @@ dependencyResolutionManagement {
 rootProject.name = "ZygiskNextNext"
 include(
     ":loader",
+    ":injector",
     ":module",
     ":webui",
 )

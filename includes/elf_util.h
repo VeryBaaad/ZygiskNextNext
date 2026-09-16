@@ -13,8 +13,9 @@
 // present, the compressed .gnu_debugdata ("mini debuginfo") section so that
 // local symbols of stripped libraries can still be resolved.
 //
-// This is used both by the ZN loader (to implement the ZygiskNextAPI symbol
-// resolver) and by the injector (to locate the linker's __loader_dlopen).
+// This is used by the ZN loader to implement the ZygiskNextAPI symbol
+// resolver. The /proc/<pid>/maps helpers it needs to locate a load base live in
+// maps_util.h.
 
 namespace znn {
 
@@ -75,38 +76,6 @@ private:
     mutable bool parsed_ = false;
     mutable std::vector<SymbolInfo> symbols_;
 };
-
-// A single entry of /proc/<pid>/maps.
-struct MapEntry {
-    uintptr_t start = 0;
-    uintptr_t end = 0;
-    uintptr_t offset = 0;
-    dev_t dev = 0;
-    ino_t inode = 0;
-    uint8_t perms = 0;      // PROT_READ / PROT_WRITE / PROT_EXEC bits
-    bool is_private = false;
-    std::string path;
-};
-
-// Parse /proc/<pid>/maps. `pid` is "self" or a numeric pid string.
-std::vector<MapEntry> parseMaps(const std::string& pid);
-
-// Parse a maps file directly (used by parseMaps(); also exposed for testing).
-std::vector<MapEntry> parseMapsPath(const std::string& path);
-
-// Scan a parsed maps list for the first mapping of a library matching `name`
-// (full path if it contains '/', otherwise basename). Returns the load base
-// (start of the offset-0 mapping), or 0 if not found. `whole_size`, when
-// non-zero, is the file size of the library: mappings that span the whole
-// file (page-rounded) are skipped, because they are raw whole-file data views
-// (e.g. created by an ElfImage's own mmap) rather than the loaded image.
-uintptr_t findLibraryBaseInMaps(const std::vector<MapEntry>& maps, const char* name,
-                                size_t whole_size = 0);
-
-// Scan /proc/self/maps for the first mapping of a library matching `name`
-// (full path if it contains '/', otherwise basename). Returns the load base,
-// or 0 if not found. See findLibraryBaseInMaps() for the `whole_size` skip.
-uintptr_t findLibraryBase(const char* name, size_t whole_size = 0);
 
 // Resolve the runtime address of `symbol` inside `lib_name`.
 uintptr_t resolveLibrarySymbol(const char* lib_name, const char* symbol, size_t* size = nullptr);

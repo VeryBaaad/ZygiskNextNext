@@ -4,14 +4,23 @@ project(loader)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Code shared with the other native modules (:injector) lives outside this
+# module, under includes/ and external/ at the repository root.
+set(ZNN_INCLUDES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../includes)
+set(ZNN_EXTERNAL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../external)
+
 add_subdirectory(external)
 
-add_library(elfutil STATIC utils/elf_util.cpp)
-target_include_directories(elfutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+add_subdirectory(${ZNN_EXTERNAL_DIR}/lzma ${CMAKE_CURRENT_BINARY_DIR}/lzma)
+
+add_library(elfutil STATIC
+    ${ZNN_INCLUDES_DIR}/elf_util.cpp
+    ${ZNN_INCLUDES_DIR}/maps_util.cpp)
+target_include_directories(elfutil PUBLIC ${ZNN_INCLUDES_DIR})
 target_link_libraries(elfutil PUBLIC lzma)
 
 add_library(loader SHARED loader.cpp)
-target_include_directories(loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(loader PRIVATE ${ZNN_INCLUDES_DIR})
 if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
     target_include_directories(loader PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/shadowhook/shadowhook/src/main/cpp/include)
@@ -39,9 +48,3 @@ endif()
 target_link_libraries(loader PRIVATE ${LOADER_LINK_LIBS})
 
 target_compile_options(loader PRIVATE -Wall -Wextra -fvisibility=hidden)
-
-add_executable(injector ${CMAKE_CURRENT_SOURCE_DIR}/injector.cpp)
-target_include_directories(injector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(injector PRIVATE ZNN_VERSION="${ZNN_VERSION}")
-target_link_libraries(injector PRIVATE elfutil log)
-target_compile_options(injector PRIVATE -Wall -Wextra)
