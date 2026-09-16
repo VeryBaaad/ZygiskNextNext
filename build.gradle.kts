@@ -77,7 +77,7 @@ extra.set("releaseLinkerFlags", releaseLinkerFlags)
 extra.set("ccachePath", ccachePath)
 
 // Android build configuration (used only by this script).
-val androidMinSdkVersion = 26
+val androidMinSdkVersion = 21
 val androidCompileSdkVersion = 37
 val androidCompileSdkMinorVersion = 1
 val androidBuildToolsVersion = "37.0.0"
