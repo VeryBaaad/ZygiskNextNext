@@ -79,9 +79,9 @@ extra.set("ccachePath", ccachePath)
 // Android build configuration (used only by this script).
 val androidMinSdkVersion = 21
 val androidCompileSdkVersion = 37
-val androidCompileSdkMinorVersion = 1
+val androidCompileSdkMinorVersion = 2
 val androidBuildToolsVersion = "37.0.0"
-val androidCompileNdkVersion = "29.0.13599879"
+val androidCompileNdkVersion = "30.0.16248370"
 
 // :injector is a Rust crate without an Android plugin, so it configures itself
 // from these instead of from AGP's DSL.
