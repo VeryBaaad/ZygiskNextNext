@@ -26,3 +26,11 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+  - package-ecosystem: "cargo"
+    directory: "/injector/"
+    schedule:
+      interval: "weekly"
+    groups:
+      crates:
+        patterns:
+          - "*"
