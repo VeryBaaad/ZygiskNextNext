@@ -1,0 +1,46 @@
+[package]
+name = "injector"
+version = "0.8.0"
+edition = "2024"
+description = "A from-scratch, standalone implementation of the Zygisk Next module."
+license = "GPL-3.0-or-later"
+
+[dependencies]
+clap = { version = "4.6", default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+] }
+libc = "0.2"
+nix = { version = "0.31", default-features = false, features = [
+    "feature",
+    "fs",
+    "process",
+    "ptrace",
+    "signal",
+    "socket",
+    "uio",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+
+[[bin]]
+name = "injector"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 0
+lto = false
+codegen-units = 1
+panic = "unwind"
+debug = 1
+strip = "debuginfo"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true
+incremental = false

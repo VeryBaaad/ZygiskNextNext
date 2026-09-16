@@ -1,0 +1,61 @@
+/*
+ * This file is part of Zygisk Next Next.
+ *
+ * Zygisk Next Next is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Zygisk Next Next is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Zygisk Next Next. If not, see <https://www.gnu.org/licenses/>.
+ *
+ * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
+ */
+
+use std::io;
+use std::io::{IoSlice, IoSliceMut};
+use std::os::fd::RawFd;
+
+use nix::cmsg_space;
+use nix::sys::socket::{self, ControlMessage, ControlMessageOwned, MsgFlags, UnixAddr};
+
+pub fn send_with_fd(socket: RawFd, payload: &[u8], descriptor: Option<RawFd>) -> io::Result<()> {
+    let payload = [IoSlice::new(payload)];
+    let descriptors = descriptor.as_slice();
+    let control = if descriptor.is_some() {
+        vec![ControlMessage::ScmRights(descriptors)]
+    } else {
+        Vec::new()
+    };
+    socket::sendmsg(
+        socket,
+        &payload,
+        &control,
+        MsgFlags::empty(),
+        None::<&UnixAddr>,
+    )
+    .map(|_| ())
+    .map_err(io::Error::from)
+}
+
+pub fn recv_with_fd(socket: RawFd, payload: &mut [u8]) -> io::Result<(usize, Option<RawFd>)> {
+    let mut payload = [IoSliceMut::new(payload)];
+    let mut control = cmsg_space!([RawFd; 1]);
+    let message =
+        socket::recvmsg::<UnixAddr>(socket, &mut payload, Some(&mut control), MsgFlags::empty())
+            .map_err(io::Error::from)?;
+
+    let mut descriptor = None;
+    for control in message.cmsgs().map_err(io::Error::from)? {
+        if let ControlMessageOwned::ScmRights(descriptors) = control {
+            descriptor = descriptors.first().copied();
+            break;
+        }
+    }
+    Ok((message.bytes, descriptor))
+}

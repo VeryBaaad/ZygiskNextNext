@@ -25,7 +25,7 @@ To comply with this and maintain legal and technical independence, you must adhe
 ## ARCHITECTURE OVERVIEW
 
 - loader/: The core native component. Responsible for process injection, module loading, and hook management using Dobby (inline hooking) or rv64hook (inline hooking for riscv64), and LSPlt (PLT hooking).
-- injector/: The standalone injector executable shipped as bin/<abi>/injector. NOT part of loader/ and never built by it; it has its own Gradle module and CMake project.
+- injector/: The standalone injector executable shipped as bin/<abi>/injector. NOT part of loader/ and never built by it; it is a Rust crate (cargo) with its own Gradle module, which drives cargo for every shipped ABI. Every `unsafe` block lives under injector/src/sys/, and the crate root denies `unsafe_code` so that stays enforceable.
 - includes/: Native code shared by :loader and :injector (ZygiskNext API header, ELF symbol resolver, /proc maps helpers).
 - external/: (repository root) Third-party sources used by more than one native module (currently the LZMA SDK). Dependencies of a single module stay in that module's src/external/.
 - module/: The Magisk / KernelSU / APatch module wrapper. Handles installation, environment setup, permission management, and status reporting. It collects the loader library and the injector binary from their own Gradle modules when building the zip.
@@ -36,6 +36,7 @@ To comply with this and maintain legal and technical independence, you must adhe
 1. Code Generation and Modification: Always prioritize stability and security when modifying hooking logic in loader/. Use modern C++ standards as defined in the project's build system. Ensure all new code is free of redundant or unnecessary comments. No nonsense comments.
 2. Dependency Management: When interacting with Dobby, LSPlt, or rv64hook, respect their individual licenses and integration patterns.
 3. Error Handling: Fail gracefully. If a ZN module fails to load or a hook fails, log the error clearly and ensure both the injector and the host process continue to run without crashing.
+4. Rust Code (injector/): Keep every module small and single-purpose; a new file belongs in injector/src/ rather than growing main.rs. Confine FFI to injector/src/sys/ and wrap it in safe interfaces, then run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` for the Android targets before finishing.
 
 ## WORKFLOW
 

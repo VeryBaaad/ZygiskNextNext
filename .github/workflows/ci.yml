@@ -57,6 +57,16 @@ jobs:
           restore-keys: ${{ runner.os }}
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android, i686-linux-android
+          components: rust-src
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
       - name: Build with Gradle
         run: |
           echo 'org.gradle.parallel=true' >> gradle.properties

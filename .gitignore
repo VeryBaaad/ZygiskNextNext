@@ -3,7 +3,7 @@
 .cxx
 build
 local.properties
-Cargo.lock
+injector/target/
 .build
 .build-*
 .gradle-home
