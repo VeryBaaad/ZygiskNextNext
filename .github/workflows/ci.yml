@@ -31,7 +31,7 @@ jobs:
         uses: actions/setup-java@v6
         with:
           distribution: "temurin"
-          java-version: "17"
+          java-version: "21"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
@@ -42,7 +42,7 @@ jobs:
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r29-beta2
+          ndk-version: r30
           add-to-path: true
           local-cache: ${{ github.event_name == 'push' }}
 

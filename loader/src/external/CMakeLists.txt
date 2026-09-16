@@ -40,12 +40,7 @@ if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
         ${SHADOWHOOK_SRC}/third_party/bsd
         ${SHADOWHOOK_SRC}/third_party/lss
     )
-    target_compile_options(shadowhook PRIVATE
-        -Wno-unused-parameter
-        -Wno-unused-but-set-variable
-        -Wno-unused-variable
-        -Wno-unused-function
-    )
+    target_compile_options(shadowhook PRIVATE -w)
 endif ()
 
 if (NOT ANDROID_ABI STREQUAL "riscv64")
@@ -68,12 +63,7 @@ if (NOT ANDROID_ABI STREQUAL "riscv64")
             ${CMAKE_CURRENT_SOURCE_DIR}/shadowhook/shadowhook/src/main/cpp/include)
         target_link_libraries(bytehook PRIVATE shadowhook)
     endif ()
-    target_compile_options(bytehook PRIVATE
-        -Wno-unused-parameter
-        -Wno-unused-but-set-variable
-        -Wno-unused-variable
-        -Wno-unused-function
-    )
+    target_compile_options(bytehook PRIVATE -w)
 
     set(XHOOK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/xhook/libxhook/jni)
     file(GLOB XHOOK_SOURCES ${XHOOK_SRC}/*.c)
@@ -86,31 +76,13 @@ endif ()
 
 if (ANDROID_ABI STREQUAL "riscv64")
     add_subdirectory(rv64hook)
-        target_compile_options(rv64hook-static PRIVATE
-        -Wno-sign-compare
-    )
+        target_compile_options(rv64hook-static PRIVATE -w)
 else ()
     option(DOBBY_GENERATE_SHARED "Build Dobby as a shared library" OFF)
     option(BUILD_EXAMPLE "Build Dobby example" OFF)
     option(BUILD_TEST "Build Dobby test" OFF)
     add_subdirectory(dobby)
-    target_compile_options(dobby PRIVATE
-        -Wno-reorder-ctor
-        -Wno-sometimes-uninitialized
-        -Wno-delete-non-abstract-non-virtual-dtor
-        -Wno-sign-compare
-        -Wno-overloaded-virtual
-        -Wno-missing-field-initializers
-        -Wno-missing-braces
-        -Wno-macro-redefined
-        -Wno-format-truncation
-        -Wno-shift-count-overflow
-		-Wno-unused-parameter
-		-Wno-unused-but-set-variable
-		-Wno-unused-private-field
-		-Wno-unused-variable
-		-Wno-unused-function
-    )
+    target_compile_options(dobby PRIVATE -w)
 endif ()
 
 add_subdirectory(lzma)
