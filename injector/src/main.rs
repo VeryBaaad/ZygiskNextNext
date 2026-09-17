@@ -37,8 +37,6 @@ mod system;
 mod targets;
 mod trace;
 
-use std::path::{Path, PathBuf};
-
 fn main() {
     let matches = ctl::command().get_matches();
 
@@ -46,17 +44,7 @@ fn main() {
         std::process::exit(ctl::ctl_main(&arguments));
     }
 
-    let module_dir = ctl::module_dir(&matches).unwrap_or_else(module_dir_of_self);
+    let module_dir = ctl::module_dir(&matches).unwrap_or_else(ctl::module_dir_of_self);
 
     daemon::Daemon::new(module_dir).run();
-}
-
-fn module_dir_of_self() -> PathBuf {
-    let Ok(executable) = std::fs::read_link("/proc/self/exe") else {
-        return PathBuf::new();
-    };
-    match executable.parent().and_then(Path::parent) {
-        Some(module_dir) => module_dir.to_path_buf(),
-        None => PathBuf::new(),
-    }
 }

@@ -80,7 +80,7 @@ pub fn map_path_equals_exe(map_path: &str, exe: &str) -> bool {
             && map_path[exe.len()..] == *DELETED_SUFFIX)
 }
 
-pub fn is_injector_alive(pid: Pid) -> bool {
+fn is_injector_process(pid: Pid) -> bool {
     if pid <= 1 {
         return false;
     }
@@ -94,17 +94,78 @@ pub fn is_injector_alive(pid: Pid) -> bool {
     comm[..read].starts_with(b"injector")
 }
 
-pub fn find_injector_pid() -> Option<Pid> {
+fn command_line(pid: Pid) -> Vec<String> {
+    let Ok(contents) = fs::read(format!("/proc/{pid}/cmdline")) else {
+        return Vec::new();
+    };
+    contents
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .map(|argument| String::from_utf8_lossy(argument).into_owned())
+        .collect()
+}
+
+/// The control client is the same binary as the daemon, so the process name
+/// cannot tell them apart: the daemon is the instance that was started without
+/// a control command. Never report ourselves.
+pub fn is_daemon_alive(pid: Pid) -> bool {
+    if pid <= 1 || pid == std::process::id() as Pid || !is_injector_process(pid) {
+        return false;
+    }
+    !command_line(pid).iter().any(|argument| argument == "--ctl")
+}
+
+/// The program counter of a process, read without tracing it: `/proc/<pid>/syscall`
+/// ends with the user stack pointer and the program counter, in hex. Returns
+/// `None` when the kernel or the policy does not let us look, and callers must
+/// then not assume anything about where the process is.
+pub fn current_pc(pid: Pid) -> Option<usize> {
+    let contents = fs::read_to_string(format!("/proc/{pid}/syscall")).ok()?;
+    let pc = contents.split_whitespace().last()?;
+    usize::from_str_radix(pc.trim_start_matches("0x"), 16).ok()
+}
+
+/// The pid that currently traces `pid`, when that tracer is not us. This is the
+/// exact, name free way to notice another loader: a process can only ever have
+/// one tracer, and a loader that took it is by definition a foreign tracer.
+pub fn foreign_tracer(pid: Pid) -> Option<Pid> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let tracer = status
+        .lines()
+        .find_map(|line| line.strip_prefix("TracerPid:"))?
+        .trim()
+        .parse::<Pid>()
+        .ok()?;
+    if tracer <= 1 || tracer == std::process::id() as Pid {
+        return None;
+    }
+    Some(tracer)
+}
+
+/// The executable of a process, for reporting which foreign loader holds it.
+pub fn process_exe(pid: Pid) -> String {
+    read_exe_path(pid)
+}
+
+/// Locate the running daemon, preferring the pid the daemon published in its
+/// state snapshot. Several daemons can outlive a userspace restart, so the
+/// oldest one (the lowest pid) wins when no pid was recorded.
+pub fn find_daemon_pid(recorded: Option<Pid>) -> Option<Pid> {
+    if recorded.is_some_and(is_daemon_alive) {
+        return recorded;
+    }
+    let mut found: Option<Pid> = None;
     for entry in fs::read_dir("/proc").ok()?.flatten() {
         let name = entry.file_name();
         let Ok(pid) = name.to_string_lossy().parse::<Pid>() else {
             continue;
         };
-        if is_injector_alive(pid) {
-            return Some(pid);
+        if !is_daemon_alive(pid) {
+            continue;
         }
+        found = Some(found.map_or(pid, |current| current.min(pid)));
     }
-    None
+    found
 }
 
 pub fn is_pre_exec_fork(exe: &str) -> bool {

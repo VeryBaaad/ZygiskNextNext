@@ -21,6 +21,7 @@ use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
 
 pub const SIGHUP: i32 = Signal::SIGHUP as i32;
 pub const SIGTERM: i32 = Signal::SIGTERM as i32;
+pub const SIGKILL: i32 = Signal::SIGKILL as i32;
 pub const SIGTRAP: i32 = Signal::SIGTRAP as i32;
 pub const SIGSTOP: i32 = Signal::SIGSTOP as i32;
 pub const SIGCHLD: i32 = Signal::SIGCHLD as i32;

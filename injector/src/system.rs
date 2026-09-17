@@ -17,11 +17,19 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use crate::sys::fs as raw_fs;
 use crate::sys::prop;
+
+/// Upper bound on how long a helper may take to answer; past it the probe is
+/// abandoned so a misbehaving helper cannot hold up the daemon.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Default)]
 pub struct RootImpl {
@@ -81,15 +89,36 @@ pub fn collect() -> SystemInfo {
     info
 }
 
+/// Read the first line a helper prints for the WebUI's root description. The
+/// probe is bounded and never inherits our stdio: `Command::output()` waits for
+/// every copy of the helper's stdout to close, so a helper that leaves a
+/// process behind would stall the daemon for good.
 fn first_line(binary: &str, argument: &str) -> String {
-    let Ok(output) = Command::new(binary).arg(argument).output() else {
+    let Ok(mut child) = Command::new(binary)
+        .arg(argument)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
         return String::new();
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(['\n', '\r'])
-        .to_owned()
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.wait();
+        return String::new();
+    };
+
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = sender.send(line);
+    });
+    let line = receiver.recv_timeout(PROBE_TIMEOUT).unwrap_or_default();
+
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    line.trim_end_matches(['\n', '\r']).to_owned()
 }

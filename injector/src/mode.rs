@@ -50,6 +50,29 @@ enum Seizure {
     GiveUp,
 }
 
+/// Images that spawn the processes ZN modules target. Another loader has to
+/// inject these while they are still in the linker, exactly like we do, so they
+/// are the only processes where racing is harmful.
+const SPAWNER_IMAGES: &[&str] = &["app_process", "zygote", "hyos_spawner"];
+
+/// How much of a spawner's linker window we hand to an event driven loader
+/// before taking it ourselves, for images we have not measured yet. An attached
+/// loader wins the same exec in microseconds, so a couple of poll ticks are
+/// plenty; one that shows up after the window could not have used the process
+/// anyway, so yielding costs nothing and racing can cost everything.
+const SPAWNER_YIELD_MS: u64 = 4;
+
+/// Hard cap on that head start, so patience can never eat a whole window.
+const SPAWNER_YIELD_MAX_MS: u64 = 40;
+
+/// Where a spawner image is: still in the linker (usable by us and by another
+/// loader), past its entry (usable by nobody), or unknown when the kernel or the
+/// policy does not let us look.
+fn linker_window(pid: Pid, exe: &str) -> Option<bool> {
+    let pc = procfs::current_pc(pid)?;
+    Some(!procfs::pc_in_exe_text(pid, exe, pc))
+}
+
 impl Daemon {
     pub fn select_mode(&mut self) {
         self.requested_mode = config::effective().mode;
@@ -63,8 +86,8 @@ impl Daemon {
             } else {
                 Tracking::Proc
             };
-        } else if zygisk_present() {
-            logi!("Zygisk implementation detected; using proc mode (poll /proc)");
+        } else if monitor_present() {
+            logi!("another Zygisk-family loader is running; using proc mode (poll /proc)");
             self.mode = Tracking::Proc;
         } else {
             self.mode = if self.seize_init() {
@@ -169,7 +192,7 @@ impl Daemon {
                                 target_since_ms: procfs::now_ms(),
                             },
                         );
-                        self.observe_target(pid, &exe);
+                        self.observe_target(pid, &exe, procfs::now_ms());
                     } else if procfs::is_pre_exec_fork(&exe) {
                         self.candidates.insert(
                             pid,
@@ -190,7 +213,7 @@ impl Daemon {
                                 self.done.insert(pid);
                                 self.candidates.remove(&pid);
                             } else {
-                                self.observe_target(pid, &exe);
+                                self.observe_target(pid, &exe, candidate.target_since_ms);
                             }
                         }
                         continue;
@@ -201,7 +224,7 @@ impl Daemon {
                         tracked.target_since_ms = since;
                     }
                     if is_target {
-                        self.observe_target(pid, &exe);
+                        self.observe_target(pid, &exe, since);
                     } else {
                         self.candidates.remove(&pid);
                         self.ignored.insert(pid);
@@ -213,6 +236,7 @@ impl Daemon {
         self.candidates.retain(|pid, _| seen.contains(pid));
         self.ignored.retain(|pid| seen.contains(pid));
         self.done.retain(|pid| seen.contains(pid));
+        self.yielded.retain(|pid| seen.contains(pid));
         self.ignored_rescans += 1;
         if self.ignored_rescans >= 15000 {
             self.ignored_rescans = 0;
@@ -220,8 +244,22 @@ impl Daemon {
         }
     }
 
-    fn observe_target(&mut self, pid: Pid, exe: &str) {
-        match self.seize_target(pid, exe) {
+    /// Remember how long an image was observed to stay in the linker. The
+    /// measurement starts when we first notice the process, so it is a lower
+    /// bound of the real window; half of it therefore always fits inside the
+    /// window, which is what the head start is derived from.
+    fn record_spawn_window(&mut self, exe: &str, observed_ms: u64) {
+        let entry = self.spawn_windows.entry(exe.to_owned()).or_insert(0);
+        *entry = (*entry).max(observed_ms);
+    }
+
+    fn spawn_yield_budget(&self, exe: &str) -> u64 {
+        let measured = self.spawn_windows.get(exe).copied().unwrap_or(0) / 2;
+        measured.clamp(SPAWNER_YIELD_MS, SPAWNER_YIELD_MAX_MS)
+    }
+
+    fn observe_target(&mut self, pid: Pid, exe: &str, since_ms: u64) {
+        match self.seize_target(pid, exe, since_ms) {
             Seizure::Retry => {}
             Seizure::Seized | Seizure::GiveUp => {
                 self.done.insert(pid);
@@ -230,7 +268,43 @@ impl Daemon {
         }
     }
 
-    fn seize_target(&mut self, pid: Pid, exe: &str) -> Seizure {
+    fn seize_target(&mut self, pid: Pid, exe: &str, since_ms: u64) -> Seizure {
+        // A process has exactly one tracer, so a foreign one means another
+        // loader already reached this process. Wait for it to finish and take
+        // the process afterwards: this is the same outcome as a failed
+        // PTRACE_SEIZE, but decided from the tracer instead of from an errno.
+        if let Some(tracer) = procfs::foreign_tracer(pid) {
+            if self.yielded.insert(tracer) {
+                logi!(
+                    "{exe} (pid {pid}) is traced by {} (pid {tracer}); yielding to it",
+                    procfs::process_exe(tracer)
+                );
+            }
+            return Seizure::Retry;
+        }
+
+        // Spawner images are the only processes another loader has to inject
+        // itself: it reacts to the same exec we are polling for. Hand it the
+        // head of the linker window and take the process only if nothing claims
+        // it. Where the process is right now is observable without tracing it,
+        // so we never gamble the whole window: a loader that arrives after it
+        // could not have used the process anyway.
+        if is_spawner_image(exe) {
+            match linker_window(pid, exe) {
+                // Past its entry: neither we nor a late loader can use it now.
+                Some(false) => {
+                    let observed = procfs::now_ms().saturating_sub(since_ms);
+                    self.record_spawn_window(exe, observed);
+                    return Seizure::GiveUp;
+                }
+                _ => {
+                    if procfs::now_ms().saturating_sub(since_ms) < self.spawn_yield_budget(exe) {
+                        return Seizure::Retry;
+                    }
+                }
+            }
+        }
+
         let Some(header) = elf::header_of_file(Path::new(&format!("/proc/{pid}/exe"))) else {
             return Seizure::GiveUp;
         };
@@ -343,7 +417,27 @@ impl Daemon {
     }
 }
 
-pub(crate) fn zygisk_present() -> bool {
+/// True when `exe` is an image that spawns the processes ZN modules target.
+fn is_spawner_image(exe: &str) -> bool {
+    let name = procfs::basename(exe);
+    SPAWNER_IMAGES.iter().any(|image| name.starts_with(image))
+}
+
+/// The tracer that holds init, when it is not us. Exact, and independent of any
+/// process name: whoever traces pid 1 owns the spawn path.
+pub(crate) fn init_holder() -> Option<Pid> {
+    procfs::foreign_tracer(1)
+}
+
+/// Whether another Zygisk-family loader is around. The exact signal is a
+/// foreign tracer, but it is blind while we hold init ourselves, so the process
+/// name scan stays as a complement. Neither is used to decide a single process:
+/// that is decided by that process's own tracer.
+pub(crate) fn monitor_present() -> bool {
+    init_holder().is_some() || zygisk_named_present()
+}
+
+fn zygisk_named_present() -> bool {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return false;
     };

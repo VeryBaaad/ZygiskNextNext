@@ -74,6 +74,12 @@ pub struct Daemon {
     pub done: HashSet<Pid>,
     pub ignored: HashSet<Pid>,
     pub candidates: HashMap<Pid, Candidate>,
+    /// Tracers we already reported as foreign loaders, so the log stays readable
+    /// while a process is held by one of them.
+    pub yielded: HashSet<Pid>,
+    /// Longest linker window observed per spawner image, used to size the head
+    /// start another loader gets on those images.
+    pub spawn_windows: BTreeMap<String, u64>,
     pub ignored_rescans: u32,
     pub listener: Option<UnixListener>,
     pub last_rescan_ms: Option<u64>,
@@ -83,6 +89,10 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn new(module_dir: PathBuf) -> Self {
+        // Log before anything that can fail or block: a daemon that dies or
+        // stalls during startup must not do so silently.
+        logi!("Zygisk Next Next {VERSION} starting");
+
         let mut daemon = Self {
             targets: Vec::new(),
             modules: BTreeMap::new(),
@@ -97,14 +107,14 @@ impl Daemon {
             done: HashSet::new(),
             ignored: HashSet::new(),
             candidates: HashMap::new(),
+            yielded: HashSet::new(),
+            spawn_windows: BTreeMap::new(),
             ignored_rescans: 0,
             listener: None,
             last_rescan_ms: None,
             last_zygisk_check_ms: 0,
             last_state_write_ms: 0,
         };
-
-        logi!("Zygisk Next Next {VERSION} starting");
 
         daemon.check_loaders();
         signal::set_handler(signal::SIGHUP, on_sighup);
@@ -140,9 +150,9 @@ impl Daemon {
                         && now - self.last_zygisk_check_ms >= 5000
                     {
                         self.last_zygisk_check_ms = now;
-                        if crate::mode::zygisk_present() {
+                        if crate::mode::monitor_present() {
                             logw!(
-                                "Zygisk implementation started while tracing init; yielding init and switching to proc mode (poll /proc)"
+                                "another Zygisk-family loader is running; yielding init and switching to proc mode (poll /proc)"
                             );
                             ptrace::detach(1, None);
                             self.tracees.remove(&1);

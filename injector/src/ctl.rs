@@ -18,8 +18,10 @@
  */
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::thread;
+use std::time::Duration;
 
 use clap::builder::ValueParser;
 use clap::{Arg, ArgMatches, Command as ClapCommand};
@@ -44,7 +46,15 @@ const CTL_ARGUMENT: &str = "ctl";
 const CTL_VALUE_NAME: &str = "COMMAND";
 const MODULE_DIR_ARGUMENT: &str = "module-dir";
 
-const USAGE: &str = "usage: injector --ctl <status|system|modules|config|config-set <inline|plt|mode> <value>|rescan|exit>";
+/// How long `--ctl restart` waits for a running daemon to go away before it
+/// escalates, and after that before it reports a failure.
+const STOP_INTERVAL: Duration = Duration::from_millis(25);
+const STOP_ATTEMPTS: u32 = 80;
+
+/// How long `--ctl start` waits for the daemon it forked to be observable.
+const START_ATTEMPTS: u32 = 20;
+
+const USAGE: &str = "usage: injector --ctl <status|system|modules|config|config-set <inline|plt|mode> <value>|start|restart|rescan|exit>";
 
 /// The command line of the injector: either a module directory to serve, or a
 /// control command answered on the spot.
@@ -66,7 +76,7 @@ pub fn command() -> ClapCommand {
                 .conflicts_with(MODULE_DIR_ARGUMENT)
                 .help(
                     "Control command: status, system, modules, config, \
-                       config-set <inline|plt|mode> <value>, rescan or exit.",
+                       config-set <inline|plt|mode> <value>, start, restart, rescan or exit.",
                 ),
         )
 }
@@ -92,6 +102,8 @@ pub fn ctl_main(arguments: &[String]) -> i32 {
             format!("injector ({pid}) requested to rescan modules")
         }),
         "exit" => signal_daemon(signal::SIGTERM, |pid| format!("injector ({pid}) exited")),
+        "start" => start_daemon(false),
+        "restart" => start_daemon(true),
         "config" => print_json(&config::effective().report()),
         "config-set" => config_set(arguments),
         "status" => status(state_snapshot().as_ref()),
@@ -154,8 +166,93 @@ fn state_snapshot() -> Option<StateSnapshot> {
     serde_json::from_str(&contents).ok()
 }
 
+/// The running daemon: the pid the daemon published wins, and the scan only
+/// covers the case of a state file that is missing or stale.
+fn daemon_pid() -> Option<Pid> {
+    procfs::find_daemon_pid(state_snapshot().and_then(|state| state.pid))
+}
+
+/// Bring the daemon up from this process, which is how the WebUI recovers after
+/// a userspace restart that skipped the module's boot scripts. The child gets
+/// its own session and stdio on /dev/null, so it outlives the caller.
+fn start_daemon(restart: bool) -> i32 {
+    if let Some(pid) = daemon_pid() {
+        if !restart {
+            return print_json(&StatusReport {
+                running: true,
+                pid,
+                mode: "unknown",
+            });
+        }
+        let _ = process::kill(pid, signal::SIGTERM);
+        for _ in 0..STOP_ATTEMPTS {
+            if !procfs::is_daemon_alive(pid) {
+                break;
+            }
+            thread::sleep(STOP_INTERVAL);
+        }
+        if procfs::is_daemon_alive(pid) {
+            let _ = process::kill(pid, signal::SIGKILL);
+            for _ in 0..STOP_ATTEMPTS {
+                if !procfs::is_daemon_alive(pid) {
+                    break;
+                }
+                thread::sleep(STOP_INTERVAL);
+            }
+        }
+        if procfs::is_daemon_alive(pid) {
+            eprintln!("injector ({pid}) did not stop");
+            return 1;
+        }
+    }
+
+    let Ok(executable) = fs::read_link("/proc/self/exe") else {
+        eprintln!("cannot resolve the injector path");
+        return 1;
+    };
+    let module_dir = module_dir_of_self();
+    if module_dir.as_os_str().is_empty() {
+        eprintln!("cannot resolve the module directory");
+        return 1;
+    }
+    match process::spawn_detached(&executable, &module_dir) {
+        Ok(pid) => {
+            // A daemon that cannot come up (bad loader, no /proc access, ...)
+            // must be reported instead of being announced as running.
+            for _ in 0..START_ATTEMPTS {
+                if procfs::is_daemon_alive(pid) {
+                    return print_json(&StatusReport {
+                        running: true,
+                        pid,
+                        mode: "unknown",
+                    });
+                }
+                thread::sleep(STOP_INTERVAL);
+            }
+            eprintln!("injector ({pid}) did not stay up");
+            1
+        }
+        Err(error) => {
+            eprintln!("cannot start the injector: {error}");
+            1
+        }
+    }
+}
+
+/// The module directory this binary was installed into, derived from its path
+/// (`<module>/bin/injector`).
+pub fn module_dir_of_self() -> PathBuf {
+    let Ok(executable) = fs::read_link("/proc/self/exe") else {
+        return PathBuf::new();
+    };
+    match executable.parent().and_then(Path::parent) {
+        Some(module_dir) => module_dir.to_path_buf(),
+        None => PathBuf::new(),
+    }
+}
+
 fn signal_daemon(requested: i32, message: fn(Pid) -> String) -> i32 {
-    let Some(pid) = procfs::find_injector_pid() else {
+    let Some(pid) = daemon_pid() else {
         println!("injector is not running");
         return 1;
     };
@@ -207,7 +304,7 @@ fn config_set(arguments: &[String]) -> i32 {
         return 1;
     }
 
-    if let Some(pid) = procfs::find_injector_pid() {
+    if let Some(pid) = daemon_pid() {
         let _ = process::kill(pid, signal::SIGHUP);
     }
 
@@ -215,18 +312,11 @@ fn config_set(arguments: &[String]) -> i32 {
 }
 
 fn status(snapshot: Option<&StateSnapshot>) -> i32 {
-    let mut pid = snapshot.and_then(|state| state.pid).unwrap_or(0);
     let recorded_mode = snapshot
         .and_then(|state| state.mode.as_deref())
         .filter(|mode| *mode == config::MODE_PTRACE || *mode == config::MODE_PROC);
-
-    if !procfs::is_injector_alive(pid)
-        && let Some(found) = procfs::find_injector_pid()
-    {
-        pid = found;
-    }
-
-    let running = pid > 0 && procfs::is_injector_alive(pid);
+    let pid = daemon_pid().unwrap_or(0);
+    let running = pid > 0;
     let mode = match recorded_mode {
         Some(mode) if running => mode,
         _ => "unknown",

@@ -19,6 +19,7 @@
 
 use std::ffi::CString;
 use std::io;
+use std::path::Path;
 
 use nix::sys::signal::kill as nix_kill;
 use nix::unistd::{self, ForkResult, Pid as NixPid};
@@ -41,6 +42,44 @@ pub fn fork() -> io::Result<Forked> {
         Ok(ForkResult::Child) => Ok(Forked::Child),
         Err(error) => Err(io::Error::from(error)),
     }
+}
+
+/// Start `executable` in a session of its own with stdio on /dev/null, so the
+/// daemon outlives the control client that asked for it. The returned pid is
+/// the daemon's: `execv` keeps it.
+pub fn spawn_detached(executable: &Path, argument: &Path) -> io::Result<Pid> {
+    match fork()? {
+        Forked::Parent(pid) => Ok(pid),
+        Forked::Child => {
+            // SAFETY: the child only performs async-signal-safe calls before
+            // exec, and leaves through `_exit` when exec cannot happen.
+            unsafe {
+                libc::setsid();
+                let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+                if devnull >= 0 {
+                    libc::dup2(devnull, libc::STDIN_FILENO);
+                    libc::dup2(devnull, libc::STDOUT_FILENO);
+                    libc::dup2(devnull, libc::STDERR_FILENO);
+                    if devnull > libc::STDERR_FILENO {
+                        libc::close(devnull);
+                    }
+                }
+                let Some(path) = path_cstring(executable) else {
+                    exit_now(1)
+                };
+                let Some(argument) = path_cstring(argument) else {
+                    exit_now(1)
+                };
+                let argv = [path.as_ptr(), argument.as_ptr(), std::ptr::null()];
+                libc::execv(path.as_ptr(), argv.as_ptr());
+            }
+            exit_now(1)
+        }
+    }
+}
+
+fn path_cstring(path: &Path) -> Option<CString> {
+    CString::new(path.as_os_str().as_encoded_bytes()).ok()
 }
 
 pub fn exit_now(code: i32) -> ! {
