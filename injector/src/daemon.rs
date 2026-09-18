@@ -77,9 +77,6 @@ pub struct Daemon {
     /// Tracers we already reported as foreign loaders, so the log stays readable
     /// while a process is held by one of them.
     pub yielded: HashSet<Pid>,
-    /// Longest linker window observed per spawner image, used to size the head
-    /// start another loader gets on those images.
-    pub spawn_windows: BTreeMap<String, u64>,
     pub ignored_rescans: u32,
     pub listener: Option<UnixListener>,
     pub last_rescan_ms: Option<u64>,
@@ -108,7 +105,6 @@ impl Daemon {
             ignored: HashSet::new(),
             candidates: HashMap::new(),
             yielded: HashSet::new(),
-            spawn_windows: BTreeMap::new(),
             ignored_rescans: 0,
             listener: None,
             last_rescan_ms: None,

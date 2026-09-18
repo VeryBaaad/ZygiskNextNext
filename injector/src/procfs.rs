@@ -115,38 +115,6 @@ pub fn is_daemon_alive(pid: Pid) -> bool {
     !command_line(pid).iter().any(|argument| argument == "--ctl")
 }
 
-/// Every thread of a process, lowest tid first.
-pub fn thread_ids(pid: Pid) -> Vec<Pid> {
-    let Ok(entries) = fs::read_dir(format!("/proc/{pid}/task")) else {
-        return Vec::new();
-    };
-    let mut tids: Vec<Pid> = entries
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<Pid>().ok())
-        .collect();
-    tids.sort_unstable();
-    tids
-}
-
-/// Whether a thread currently sits inside a syscall: `/proc/<tid>/syscall`
-/// starts with the syscall number and prints `-1` for user space. `None` when
-/// the kernel or the policy does not let us look.
-pub fn in_syscall(tid: Pid) -> Option<bool> {
-    let contents = fs::read_to_string(format!("/proc/{tid}/syscall")).ok()?;
-    let number = contents.split_whitespace().next()?;
-    number.parse::<i64>().ok().map(|number| number >= 0)
-}
-
-/// The program counter of a process, read without tracing it: `/proc/<pid>/syscall`
-/// ends with the user stack pointer and the program counter, in hex. Returns
-/// `None` when the kernel or the policy does not let us look, and callers must
-/// then not assume anything about where the process is.
-pub fn current_pc(pid: Pid) -> Option<usize> {
-    let contents = fs::read_to_string(format!("/proc/{pid}/syscall")).ok()?;
-    let pc = contents.split_whitespace().last()?;
-    usize::from_str_radix(pc.trim_start_matches("0x"), 16).ok()
-}
-
 /// The pid that currently traces `pid`, when that tracer is not us. This is the
 /// exact, name free way to notice another loader: a process can only ever have
 /// one tracer, and a loader that took it is by definition a foreign tracer.

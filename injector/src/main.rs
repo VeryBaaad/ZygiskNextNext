@@ -25,7 +25,6 @@ mod ctl;
 mod daemon;
 mod elf;
 mod fileio;
-mod live;
 mod log;
 mod maps;
 mod mode;
