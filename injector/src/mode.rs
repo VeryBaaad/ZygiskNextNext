@@ -63,6 +63,10 @@ const SPAWNER_IMAGES: &[&str] = &["app_process", "zygote", "hyos_spawner"];
 /// anyway, so yielding costs nothing and racing can cost everything.
 const SPAWNER_YIELD_MS: u64 = 4;
 
+/// How long a target is retried before it is written off. Waiting longer has no
+/// value: the processes a foreign tracer holds are held for their whole life.
+const HOLD_TIMEOUT_MS: u64 = 5000;
+
 /// Hard cap on that head start, so patience can never eat a whole window.
 const SPAWNER_YIELD_MAX_MS: u64 = 40;
 
@@ -210,9 +214,8 @@ impl Daemon {
                 Some(candidate) => {
                     if exe == candidate.exe {
                         if is_target {
-                            if procfs::now_ms() - candidate.target_since_ms > 5000 {
-                                self.done.insert(pid);
-                                self.candidates.remove(&pid);
+                            if procfs::now_ms() - candidate.target_since_ms > HOLD_TIMEOUT_MS {
+                                self.abandon(pid, &exe);
                             } else {
                                 self.observe_target(pid, &exe, candidate.target_since_ms);
                             }
@@ -243,6 +246,24 @@ impl Daemon {
             self.ignored_rescans = 0;
             self.ignored.clear();
         }
+    }
+
+    /// Give up on a target and say why. A foreign tracer that never lets go is
+    /// the reason we cannot inject into a process at all — a process has exactly
+    /// one tracer — so it is reported instead of being dropped in silence.
+    fn abandon(&mut self, pid: Pid, exe: &str) {
+        let holder = procfs::foreign_tracer(pid)
+            .map(procfs::process_exe)
+            .unwrap_or_default();
+        if holder.is_empty() {
+            logw!("{exe} (pid {pid}) was never injectable; giving up");
+            self.record_failure(pid, exe, "no injection window");
+        } else {
+            logw!("{exe} (pid {pid}) is still held by {holder}; giving up");
+            self.record_failure(pid, exe, &format!("held by {holder}"));
+        }
+        self.done.insert(pid);
+        self.candidates.remove(&pid);
     }
 
     /// Remember how long an image was observed to stay in the linker. The
