@@ -349,6 +349,7 @@ impl Daemon {
         }
 
         let Some(header) = elf::header_of_file(Path::new(&format!("/proc/{pid}/exe"))) else {
+            logw!("{exe} (pid {pid}): cannot read its ELF header; skipping");
             return Seizure::GiveUp;
         };
         let arch = elf::arch_of(&header);
@@ -371,6 +372,10 @@ impl Daemon {
             }
         }
         if base == 0 {
+            logw!(
+                "{exe} (pid {pid}): no load base in /proc/{pid}/maps ({} entries read); skipping",
+                maps::parse_for_pid(pid).len()
+            );
             return Seizure::GiveUp;
         }
         if has_loader {
@@ -382,6 +387,7 @@ impl Daemon {
 
         let (entry, thumb) = crate::trace::entry_point(arch, &header, base);
         if entry == 0 {
+            logw!("{exe} (pid {pid}): no usable entry point; skipping");
             return Seizure::GiveUp;
         }
 
@@ -389,10 +395,12 @@ impl Daemon {
             if error.kind() == std::io::ErrorKind::PermissionDenied {
                 return Seizure::Retry;
             }
+            logw!("{exe} (pid {pid}): cannot seize: {error}; skipping");
             return Seizure::GiveUp;
         }
 
-        if ptrace::interrupt(pid).is_err() {
+        if let Err(error) = ptrace::interrupt(pid) {
+            logw!("{exe} (pid {pid}): cannot interrupt: {error}; skipping");
             ptrace::detach(pid, None);
             return Seizure::GiveUp;
         }
@@ -408,6 +416,7 @@ impl Daemon {
                 }
             }
             if procfs::now_ms() >= deadline {
+                logw!("{exe} (pid {pid}): never stopped after being interrupted; skipping");
                 ptrace::detach(pid, None);
                 return Seizure::GiveUp;
             }
@@ -426,6 +435,7 @@ impl Daemon {
         }
 
         let Ok(regs) = read_registers(pid, arch) else {
+            logw!("{exe} (pid {pid}): cannot read its registers; skipping");
             ptrace::detach(pid, None);
             return Seizure::GiveUp;
         };
@@ -448,6 +458,7 @@ impl Daemon {
         };
         tracee.deadline_ms = procfs::now_ms() + 3000;
         if !set_entry_breakpoint(pid, &mut tracee, thumb) {
+            logw!("{exe} (pid {pid}): cannot arm the entry breakpoint; skipping");
             ptrace::detach(pid, None);
             return Seizure::GiveUp;
         }

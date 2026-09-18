@@ -45,14 +45,21 @@ pub fn parse_for_pid(pid: Pid) -> Vec<MapEntry> {
 }
 
 pub fn parse_path(path: &str) -> Vec<MapEntry> {
-    let Ok(contents) = fs::read_to_string(path) else {
+    // /proc/<pid>/maps is kernel output, not text. Reading it as a string makes
+    // one path with a byte that is not valid UTF-8 hide the entire file, which
+    // costs us the process without a word: everything before the path column is
+    // ASCII, so parse it as bytes and only soften the path.
+    let Ok(contents) = fs::read(path) else {
         return Vec::new();
     };
-    contents.lines().filter_map(parse_line).collect()
+    contents
+        .split(|byte| *byte == b'\n')
+        .filter_map(parse_line)
+        .collect()
 }
 
-fn parse_line(line: &str) -> Option<MapEntry> {
-    let mut fields = line.splitn(6, ' ');
+fn parse_line(line: &[u8]) -> Option<MapEntry> {
+    let mut fields = line.splitn(6, |byte| *byte == b' ');
     let range = fields.next()?;
     let perms = fields.next()?;
     let offset = fields.next()?;
@@ -60,28 +67,35 @@ fn parse_line(line: &str) -> Option<MapEntry> {
     fields.next()?; // inode
     let path = fields.next().unwrap_or_default();
 
-    let (start, end) = range.split_once('-')?;
-    let permissions = perms.as_bytes();
-    if permissions.len() < 4 {
+    let dash = range.iter().position(|byte| *byte == b'-')?;
+    let (start, end) = (&range[..dash], &range[dash + 1..]);
+    if perms.len() < 4 {
         return None;
     }
 
     let mut decoded = 0;
-    if permissions[0] == b'r' {
+    if perms[0] == b'r' {
         decoded |= PROT_READ;
     }
-    if permissions[1] == b'w' {
+    if perms[1] == b'w' {
         decoded |= PROT_WRITE;
     }
-    if permissions[2] == b'x' {
+    if perms[2] == b'x' {
         decoded |= PROT_EXEC;
     }
 
     Some(MapEntry {
-        start: usize::from_str_radix(start, 16).ok()?,
-        end: usize::from_str_radix(end, 16).ok()?,
-        offset: usize::from_str_radix(offset, 16).ok()?,
+        start: address(start)?,
+        end: address(end)?,
+        offset: address(offset)?,
         perms: decoded,
-        path: path.trim_end_matches(['\n', '\r']).to_owned(),
+        path: String::from_utf8_lossy(path)
+            .trim_end_matches(['\n', '\r'])
+            .to_owned(),
     })
+}
+
+/// Parse one hexadecimal column of a maps line.
+fn address(field: &[u8]) -> Option<usize> {
+    usize::from_str_radix(std::str::from_utf8(field).ok()?, 16).ok()
 }

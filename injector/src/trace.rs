@@ -267,6 +267,7 @@ impl Daemon {
 
         tracee.saved = regs;
         if !self.start_memfd_call(pid, tracee) {
+            loge!("entry trap in pid {pid}: cannot start the loader memfd; giving up");
             restore_entry(pid, tracee);
             ptrace::detach(pid, None);
             return Progress::Finished;
@@ -285,15 +286,18 @@ impl Daemon {
         let name = b"loader\0";
         let stack = regs.sp().wrapping_sub(name.len() + 0x10) & STACK_MASK;
         if !write_memory(pid, stack, name) {
+            loge!("failed to write the memfd name below the stack for pid {pid}");
             return false;
         }
         regs.set_sp(stack);
 
         let arguments = [tracee.arch.memfd_create_number() as usize, stack, 0];
         if !setup_call(pid, &mut regs, syscall_address, tracee.entry, &arguments) {
+            loge!("failed to set up the memfd_create call for pid {pid}");
             return false;
         }
         if !write_registers(pid, &regs) {
+            loge!("failed to write the registers for the memfd_create call in pid {pid}");
             return false;
         }
         tracee.state = State::Memfd;
