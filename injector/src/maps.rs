@@ -59,6 +59,11 @@ pub fn parse_path(path: &str) -> Vec<MapEntry> {
 }
 
 fn parse_line(line: &[u8]) -> Option<MapEntry> {
+    // The five columns before the pathname are ASCII fields; the pathname is the
+    // rest of the line. The kernel pads it, so the remainder starts with spaces:
+    // keeping them makes every comparison against a real path fail, which is why
+    // a load base could never be found. Skip that padding, exactly like the
+    // whitespace directive of the sscanf format the C++ injector used.
     let mut fields = line.splitn(6, |byte| *byte == b' ');
     let range = fields.next()?;
     let perms = fields.next()?;
@@ -66,6 +71,10 @@ fn parse_line(line: &[u8]) -> Option<MapEntry> {
     fields.next()?; // device
     fields.next()?; // inode
     let path = fields.next().unwrap_or_default();
+    let path = match path.iter().position(|byte| !byte.is_ascii_whitespace()) {
+        Some(start) => &path[start..],
+        None => &path[..0],
+    };
 
     let dash = range.iter().position(|byte| *byte == b'-')?;
     let (start, end) = (&range[..dash], &range[dash + 1..]);
