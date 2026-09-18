@@ -27,6 +27,7 @@ use crate::arch::Arch;
 use crate::config;
 use crate::daemon::{Daemon, Tracking};
 use crate::elf;
+use crate::live::TRACER_HELD;
 use crate::log::{logi, logw};
 use crate::maps;
 use crate::procfs;
@@ -268,6 +269,26 @@ impl Daemon {
         }
     }
 
+    /// The entry point is gone, which means another loader took the process
+    /// first. The chain does not need that point: the process can still be
+    /// injected while it runs, so it is not necessarily lost.
+    fn inject_running(&mut self, pid: Pid, exe: &str) -> Seizure {
+        match crate::live::inject_into_running(self, pid, exe) {
+            Ok(()) => {
+                self.record_success(pid, exe);
+                Seizure::GiveUp
+            }
+            // Another tracer took the process between our look and the seize:
+            // that is exactly the case the poll loop retries, so do not count
+            // it as a permanent failure.
+            Err(reason) if reason == TRACER_HELD => Seizure::Retry,
+            Err(reason) => {
+                self.record_failure(pid, exe, &reason);
+                Seizure::GiveUp
+            }
+        }
+    }
+
     fn seize_target(&mut self, pid: Pid, exe: &str, since_ms: u64) -> Seizure {
         // A process has exactly one tracer, so a foreign one means another
         // loader already reached this process. Wait for it to finish and take
@@ -291,11 +312,12 @@ impl Daemon {
         // could not have used the process anyway.
         if is_spawner_image(exe) {
             match linker_window(pid, exe) {
-                // Past its entry: neither we nor a late loader can use it now.
+                // Past its entry: the entry point is no longer available, but
+                // the process is still injectable while it runs.
                 Some(false) => {
                     let observed = procfs::now_ms().saturating_sub(since_ms);
                     self.record_spawn_window(exe, observed);
-                    return Seizure::GiveUp;
+                    return self.inject_running(pid, exe);
                 }
                 _ => {
                     if procfs::now_ms().saturating_sub(since_ms) < self.spawn_yield_budget(exe) {
@@ -388,9 +410,11 @@ impl Daemon {
         };
         let pc = regs.pc();
         if procfs::pc_in_exe_text(pid, exe, pc) {
-            logw!("{exe} (pid {pid}) already past entry (pc {pc:#x}); instance missed");
+            // Too late for the entry point: hand the process over to the live
+            // injection path, which needs no such point at all.
+            logi!("{exe} (pid {pid}) is already past its entry (pc {pc:#x})");
             ptrace::detach(pid, None);
-            return Seizure::GiveUp;
+            return self.inject_running(pid, exe);
         }
 
         let mut tracee = Tracee::new(State::Entry, arch);

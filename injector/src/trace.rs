@@ -549,8 +549,8 @@ impl Daemon {
     }
 }
 
-const ANDROID_DLEXT_USE_LIBRARY_FD: u64 = 0x10;
-const RTLD_NOW: usize = 2;
+pub(crate) const ANDROID_DLEXT_USE_LIBRARY_FD: u64 = 0x10;
+pub(crate) const RTLD_NOW: usize = 2;
 
 fn loader_path(daemon: &Daemon, is_64: bool) -> String {
     let path = if is_64 {
@@ -581,13 +581,13 @@ fn find_library(pid: Pid, basename: &str) -> Option<(usize, String)> {
         .map(|entry| (entry.start, entry.path))
 }
 
-fn resolve_symbol(pid: Pid, basename: &str, symbol: &str) -> Option<usize> {
+pub(crate) fn resolve_symbol(pid: Pid, basename: &str, symbol: &str) -> Option<usize> {
     let (base, path) = find_library(pid, basename)?;
     let address = elf::symbol_address(Path::new(&path), base, symbol);
     (address != 0).then_some(address)
 }
 
-fn resolve_dlopen_ext(pid: Pid) -> Option<usize> {
+pub(crate) fn resolve_dlopen_ext(pid: Pid) -> Option<usize> {
     let symbols = [
         ("linker64", "__loader_android_dlopen_ext"),
         ("linker", "__loader_android_dlopen_ext"),
@@ -598,11 +598,11 @@ fn resolve_dlopen_ext(pid: Pid) -> Option<usize> {
         .find_map(|(library, symbol)| resolve_symbol(pid, library, symbol))
 }
 
-fn resolve_dlerror(pid: Pid) -> Option<usize> {
+pub(crate) fn resolve_dlerror(pid: Pid) -> Option<usize> {
     resolve_symbol(pid, "libdl.so", "dlerror")
 }
 
-fn resolve_syscall(pid: Pid) -> Option<usize> {
+pub(crate) fn resolve_syscall(pid: Pid) -> Option<usize> {
     resolve_symbol(pid, "libc.so", "syscall")
 }
 
