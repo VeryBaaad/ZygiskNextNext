@@ -26,8 +26,7 @@ To comply with this and maintain legal and technical independence, you must adhe
 
 - loader/: The core native component (C++), injected into target processes; it loads modules and manages hooks using Dobby (inline hooking), shadowhook (arm/arm64), rv64hook (riscv64), and LSPlt / ByteHook / xHook (PLT hooking). Its sources are split by area under loader/src/: hook/ (engine selection, inline and PLT dispatch, one file per backend in hook/backend/), api/ (ZygiskNextAPI implementation and the per-version tables), hyos/ (HyperOS Runtime), ipc/ (injector daemon protocol), companion/ (companion process), module/ (zn_modules.txt matching and loading), config/, process/ and utils/ (ELF/maps helpers, memfd dlopen). Only entry.cpp exports anything (`znn_loader_init`).
 - injector/: The standalone injector executable shipped as bin/<abi>/injector. NOT part of loader/ and never built by it; it is a Rust crate (cargo) with its own Gradle module, which drives cargo for every shipped ABI. Every `unsafe` block lives under injector/src/sys/, and the crate root denies `unsafe_code` so that stays enforceable.
-- loader/src/include/: The ZygiskNext API header (zygisk_next_api.h) a module is built against; the ELF symbol resolver and /proc maps helpers live in loader/src/utils/.
-- external/: (repository root) Third-party sources used by more than one native module (currently the LZMA SDK). Dependencies of a single module stay in that module's src/external/.
+- loader/src/include/: The ZygiskNext API header (zygisk_next_api.h). DO NOT EDIT THIS.
 - module/: The Magisk / KernelSU / APatch module wrapper. Handles installation, environment setup, permission management, and status reporting. It collects the loader library and the injector binary from their own Gradle modules when building the zip.
 - webui/: Web-based user interface components (KernelSU WebUI) for module management and configuration.
 
