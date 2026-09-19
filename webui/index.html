@@ -8,25 +8,35 @@
     />
     <meta name="color-scheme" content="light dark" />
     <title>Zygisk Next Next</title>
-    <script>
-      (function () {
-        try {
-          var saved = localStorage.getItem('znn_theme');
-          var dark =
-            saved === 'dark' ||
-            (saved !== 'light' &&
-              window.matchMedia('(prefers-color-scheme: dark)').matches);
-          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-        } catch (e) {
-          document.documentElement.dataset.theme = 'light';
-        }
-      })();
-    </script>
   </head>
   <body>
-    <znn-top-bar></znn-top-bar>
-    <main id="content" class="content"></main>
-    <znn-footer></znn-footer>
+    <m3e-theme
+      id="znn-theme"
+      color="#6750a4"
+      scheme="light"
+      motion="expressive"
+      density="-2"
+    >
+      <znn-top-bar></znn-top-bar>
+      <main id="content" class="content"></main>
+      <znn-footer></znn-footer>
+    </m3e-theme>
+    <script>
+      (function () {
+        var scheme = 'light';
+        try {
+          var saved = localStorage.getItem('znn_theme');
+          if (saved === 'light' || saved === 'dark') {
+            scheme = saved;
+          } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            scheme = 'dark';
+          }
+        } catch (e) {}
+        var host = document.getElementById('znn-theme');
+        if (host) host.setAttribute('scheme', scheme);
+        document.documentElement.style.colorScheme = scheme;
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

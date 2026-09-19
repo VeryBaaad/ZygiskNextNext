@@ -1,11 +1,14 @@
-import '@material/web/elevation/elevation.js';
-import '@material/web/divider/divider.js';
-import '@material/web/icon/icon.js';
-import '@material/web/iconbutton/icon-button.js';
+import '@m3e/web/card';
+import '@m3e/web/list';
 
 import type { ZnnModule } from '../api/modules';
 import { onLocaleChange, t } from '../i18n';
 import { escapeHtml } from '../util/html';
+
+const basename = (value: string): string => {
+  const cut = value.lastIndexOf('/');
+  return cut >= 0 ? value.slice(cut + 1) : value;
+};
 
 export class ModulesCard extends HTMLElement {
   private unsub?: () => void;
@@ -25,79 +28,77 @@ export class ModulesCard extends HTMLElement {
     this.unsub = undefined;
   }
 
+  private renderProcesses(m: ZnnModule): string {
+    const failed = m.failed ?? [];
+    const rows: string[] = [];
+
+    if (m.processes.length === 0) {
+      rows.push('<div class="proc-empty">—</div>');
+    } else {
+      for (const p of m.processes) {
+        const name = basename(p.name);
+        rows.push(`
+          <div class="proc-row">
+            <span class="proc-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+            <span class="proc-pid">pid=${p.pid}</span>
+          </div>`);
+      }
+    }
+
+    if (failed.length > 0) {
+      rows.push(`<div class="proc-failed-title">${escapeHtml(t('modules.failedTitle'))}</div>`);
+      for (const f of failed) {
+        const name = basename(f.name);
+        rows.push(`
+          <div class="proc-failed-row">
+            <span class="proc-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+            <span class="proc-failed-reason" title="${escapeHtml(f.reason)}">
+              ${escapeHtml(f.reason)}
+            </span>
+          </div>`);
+      }
+    }
+
+    return `<div slot="items" class="proc-list">${rows.join('')}</div>`;
+  }
+
   private renderModule(m: ZnnModule): string {
     const isOpen = this.expanded.has(m.id);
-    const procs = m.processes;
-    const failed = m.failed ?? [];
+    const failedCount = (m.failed ?? []).length;
     const label = `${m.name} (${m.id})`;
+    const counts = [escapeHtml(t('modules.processes', { n: m.processes.length }))];
+    if (failedCount > 0) {
+      counts.push(escapeHtml(t('modules.failed', { n: failedCount })));
+    }
+
     return `
-      <div class="module-row">
-        <span class="module-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
-        <div class="module-pill" data-id="${escapeHtml(m.id)}" role="button" tabindex="0"
-             aria-expanded="${isOpen ? 'true' : 'false'}">
-          <span class="module-count">${t('modules.processes', { n: procs.length })}</span>
-          ${failed.length > 0
-            ? `<span class="module-failed-count">${t('modules.failed', { n: failed.length })}</span>`
-            : ''}
-          <md-icon-button class="module-expand"
-                          aria-label="${isOpen ? t('modules.collapse') : t('modules.expand')}">
-            <md-icon>${isOpen ? 'expand_less' : 'expand_more'}</md-icon>
-          </md-icon-button>
-        </div>
-      </div>
-      <div class="module-procs ${isOpen ? 'open' : ''}">
-        ${procs.length === 0
-          ? '<div class="proc-empty">—</div>'
-          : procs
-              .map(
-                (p) => `
-          <div class="proc-row">
-            <span class="proc-name" title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</span>
-            <span class="proc-pid">pid=${p.pid}</span>
-          </div>`,
-              )
-              .join('')}
-        ${failed.length === 0
-          ? ''
-          : `<div class="proc-failed">
-               <div class="proc-failed-title">${t('modules.failedTitle')}</div>
-               ${failed
-                 .map(
-                   (f) => `
-               <div class="proc-row proc-failed-row">
-                 <span class="proc-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
-                 <span class="proc-failed-reason" title="${escapeHtml(f.reason)}">${escapeHtml(f.reason)}</span>
-               </div>`,
-                 )
-                 .join('')}
-             </div>`}
-      </div>`;
+      <m3e-expandable-list-item data-id="${escapeHtml(m.id)}" ${isOpen ? 'open' : ''}>
+        <span class="module-line">
+          <span class="module-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+          <span class="module-count ${failedCount > 0 ? 'has-failed' : ''}">${counts.join(' · ')}</span>
+        </span>
+        ${this.renderProcesses(m)}
+      </m3e-expandable-list-item>`;
   }
 
   private render(): void {
-    this.innerHTML = `
-      <div class="md-card modules-card">
-        <md-elevation></md-elevation>
-        <div class="card-body">
-          <div class="card-title">${t('modules.title')}</div>
-          <md-divider></md-divider>
-          ${this.modules.length === 0
-            ? `<div class="modules-empty">${t('modules.noModules')}</div>`
-            : this.modules.map((m) => this.renderModule(m)).join('')}
-        </div>
-      </div>`;
+    const body =
+      this.modules.length === 0
+        ? `<div class="modules-empty">${escapeHtml(t('modules.noModules'))}</div>`
+        : this.modules.map((m) => this.renderModule(m)).join('');
 
-    this.querySelectorAll<HTMLElement>('.module-pill').forEach((pill) => {
-      pill.addEventListener('click', () => {
-        const id = pill.dataset.id;
-        if (!id) return;
-        if (this.expanded.has(id)) {
-          this.expanded.delete(id);
-        } else {
-          this.expanded.add(id);
-        }
-        this.render();
-      });
+    this.innerHTML = `
+      <m3e-card class="modules-card" variant="filled">
+        <div slot="content" class="card-body">
+          <m3e-list class="modules-list">${body}</m3e-list>
+        </div>
+      </m3e-card>`;
+
+    this.querySelectorAll<HTMLElement>('m3e-expandable-list-item[data-id]').forEach((item) => {
+      const id = item.getAttribute('data-id');
+      if (!id) return;
+      item.addEventListener('opened', () => this.expanded.add(id));
+      item.addEventListener('closed', () => this.expanded.delete(id));
     });
   }
 }

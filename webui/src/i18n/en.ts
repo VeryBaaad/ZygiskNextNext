@@ -1,25 +1,26 @@
 export const en: Record<string, string> = {
-  'topbar.themeLabel': 'Toggle theme',
+  'topbar.themeLabel': 'Theme',
   'topbar.langLabel': 'Language',
+
+  'theme.auto': 'Follow system',
+  'theme.light': 'Light',
+  'theme.dark': 'Dark',
+
+  'actions.refresh': 'Refresh',
 
   'status.active': 'Active',
   'status.inactive': 'Inactive',
 
-  'info.title': 'Basic Info',
   'info.rootImpl': 'Root Implementation',
   'info.rootImpl.none': 'None detected',
   'info.mode': 'Current Mode',
   'info.unknown': 'Unknown',
 
-  'modules.title': 'Modules',
   'modules.processes': '{n} processes',
   'modules.failed': '{n} failed',
   'modules.failedTitle': 'Injection failures',
   'modules.noModules': 'No modules',
-  'modules.expand': 'Expand',
-  'modules.collapse': 'Collapse',
 
-  'config.title': 'Configuration',
   'config.inlineHook': 'Inline Hook implementation',
   'config.pltHook': 'PLT Hook implementation',
   'config.mode': 'Tracking Mode',

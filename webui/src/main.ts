@@ -1,13 +1,7 @@
 import '@material-symbols/font-400/outlined.css';
 import './styles.css';
 
-import '@material/web/button/outlined-button.js';
-import '@material/web/divider/divider.js';
-import '@material/web/elevation/elevation.js';
-import '@material/web/icon/icon.js';
-import '@material/web/iconbutton/icon-button.js';
-import '@material/web/menu/menu.js';
-import '@material/web/menu/menu-item.js';
+import '@m3e/web/theme';
 
 import { enableEdgeToEdge, fullScreen } from 'kernelsu';
 
@@ -51,28 +45,45 @@ interface CardData {
 }
 
 let cards: CardData = { status: null, system: null, modules: null, config: null };
+let loading = false;
+
+function topBar(): (HTMLElement & { refresh?: boolean }) | null {
+  return document.querySelector('znn-top-bar');
+}
+
+function syncRefresh(): void {
+  const bar = topBar();
+  if (bar) bar.refresh = loading;
+}
 
 async function load(): Promise<void> {
-  if (!isKsuAvailable()) return;
-  const [status, system, modules, config] = await Promise.all([
-    getInjectorStatus().catch((e) => {
-      console.warn('[znn] status:', e);
-      return null;
-    }),
-    getSystemInfo().catch((e) => {
-      console.warn('[znn] system:', e);
-      return null;
-    }),
-    getModules().catch((e) => {
-      console.warn('[znn] modules:', e);
-      return null;
-    }),
-    getHookConfig().catch((e) => {
-      console.warn('[znn] config:', e);
-      return null;
-    }),
-  ]);
-  cards = { status, system, modules, config };
+  if (!isKsuAvailable() || loading) return;
+  loading = true;
+  syncRefresh();
+  try {
+    const [status, system, modules, config] = await Promise.all([
+      getInjectorStatus().catch((e) => {
+        console.warn('[znn] status:', e);
+        return null;
+      }),
+      getSystemInfo().catch((e) => {
+        console.warn('[znn] system:', e);
+        return null;
+      }),
+      getModules().catch((e) => {
+        console.warn('[znn] modules:', e);
+        return null;
+      }),
+      getHookConfig().catch((e) => {
+        console.warn('[znn] config:', e);
+        return null;
+      }),
+    ]);
+    cards = { status, system, modules, config };
+  } finally {
+    loading = false;
+    syncRefresh();
+  }
   render();
 }
 
@@ -96,5 +107,16 @@ function render(): void {
   }
 }
 
-onLocaleChange(() => render());
-void load();
+topBar()?.addEventListener('znn-refresh', () => {
+  void load();
+});
+
+onLocaleChange(() => {
+  render();
+});
+
+if (isKsuAvailable()) {
+  void load();
+} else {
+  render();
+}

@@ -1,9 +1,10 @@
-import '@material/web/elevation/elevation.js';
-import '@material/web/icon/icon.js';
+import '@m3e/web/card';
+import '@m3e/web/icon';
 
 import { VER_NAME } from '../app-info';
 import type { InjectorStatus } from '../api/injector';
 import { onLocaleChange, t } from '../i18n';
+import { escapeHtml } from '../util/html';
 
 export class StatusCard extends HTMLElement {
   private unsub?: () => void;
@@ -22,21 +23,28 @@ export class StatusCard extends HTMLElement {
     this.unsub = undefined;
   }
 
+  private modeText(): string {
+    if (!this.data.running) return '';
+    if (this.data.mode === 'proc') return t('config.mode.proc');
+    if (this.data.mode === 'ptrace') return t('config.mode.ptrace');
+    return '';
+  }
+
   private render(): void {
     const active = this.data.running;
+    const mode = this.modeText();
     this.innerHTML = `
-      <div class="md-card status-card">
-        <md-elevation></md-elevation>
-        <div class="card-body status-row">
-          <md-icon class="status-icon ${active ? 'is-active' : 'is-failed'}" style="font-size: 24px;">
-            ${active ? 'check_circle' : 'warning'}
-          </md-icon>
+      <m3e-card class="status-card" variant="filled">
+        <div slot="content" class="status-body">
+          <m3e-icon class="status-icon ${active ? 'is-active' : 'is-inactive'}"
+                    name="${active ? 'check_circle' : 'warning'}"></m3e-icon>
           <div class="status-text">
-            <div class="status-label">${t(active ? 'status.active' : 'status.inactive')}</div>
-            <div class="status-version">${VER_NAME}</div>
+            <div class="status-label">${escapeHtml(t(active ? 'status.active' : 'status.inactive'))}</div>
+            <div class="status-version">${escapeHtml(VER_NAME)}</div>
           </div>
+          ${mode ? `<span class="status-badge">${escapeHtml(mode)}</span>` : ''}
         </div>
-      </div>`;
+      </m3e-card>`;
   }
 }
 
