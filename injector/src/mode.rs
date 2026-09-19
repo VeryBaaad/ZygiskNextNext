@@ -18,6 +18,7 @@
  */
 
 use std::fs::File;
+use std::io;
 use std::io::Read;
 use std::path::Path;
 use std::thread;
@@ -34,12 +35,13 @@ use crate::ptrace_ops::read_registers;
 use crate::sys::Pid;
 use crate::sys::ptrace;
 use crate::sys::signal;
-use crate::sys::wait;
-use crate::trace::{State, Tracee, restore_entry, set_entry_breakpoint};
+use crate::sys::wait::{self, Status};
+use crate::trace::{State, Tracee, release_tracee, set_entry_breakpoint};
 
 /// How long a target is retried before it is written off. Waiting longer has no
 /// value: a process another tracer holds is held for its whole life.
 const HOLD_TIMEOUT_MS: u64 = 5000;
+const INTERRUPT_TIMEOUT_MS: u64 = 200;
 
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -87,8 +89,10 @@ impl Daemon {
         self.requested_mode = wanted.clone();
 
         if wanted == config::MODE_PROC && self.mode == Tracking::Ptrace {
-            ptrace::detach(1, None);
-            self.tracees.remove(&1);
+            if !self.hand_over_init() {
+                logw!("tracking mode proc needs init to be handed over; staying in ptrace mode");
+                return;
+            }
             self.mode = Tracking::Proc;
             self.state.dirty = true;
             logw!("tracking mode changed to proc; detached init and switched to polling /proc");
@@ -96,6 +100,22 @@ impl Daemon {
             logw!(
                 "tracking mode {wanted} only applies on the next injector start; staying in proc mode"
             );
+        }
+    }
+
+    pub fn hand_over_init(&mut self) -> bool {
+        if stop_tracee(1, INTERRUPT_TIMEOUT_MS).is_none() {
+            logw!("init (pid 1) does not stop; keeping it traced");
+            return false;
+        }
+        self.tracees.remove(&1);
+        match ptrace::detach_result(1, None) {
+            Ok(()) => true,
+            Err(error) => {
+                logw!("cannot detach from init: {error}");
+                ptrace::cont(1, None);
+                false
+            }
         }
     }
 
@@ -125,12 +145,45 @@ impl Daemon {
             .collect();
 
         for pid in expired {
+            let Some(mut tracee) = self.tracees.remove(&pid) else {
+                continue;
+            };
+            let Some(status) = stop_tracee(pid, INTERRUPT_TIMEOUT_MS) else {
+                logw!(
+                    "entry breakpoint for pid {pid} never hit, and it does not stop; retrying later"
+                );
+                tracee.deadline_ms = procfs::now_ms() + HOLD_TIMEOUT_MS;
+                self.tracees.insert(pid, tracee);
+                break;
+            };
+
             logw!("entry breakpoint for pid {pid} never hit (already past entry?), detaching");
-            if let Some(tracee) = self.tracees.remove(&pid) {
-                restore_entry(pid, &tracee);
+            if status.is_stopped() {
+                release_tracee(pid, &tracee);
+                ptrace::detach(pid, None);
             }
-            ptrace::detach(pid, None);
             self.done.insert(pid);
+        }
+    }
+
+    pub fn release_tracees(&mut self) {
+        let pending: Vec<Pid> = self
+            .tracees
+            .iter()
+            .filter(|(_, tracee)| tracee.state != State::Traced)
+            .map(|(pid, _)| *pid)
+            .collect();
+
+        for pid in pending {
+            let Some(tracee) = self.tracees.remove(&pid) else {
+                continue;
+            };
+            if stop_tracee(pid, INTERRUPT_TIMEOUT_MS).is_none() {
+                logw!("pid {pid} does not stop; its entry breakpoint is left in place");
+                continue;
+            }
+            release_tracee(pid, &tracee);
+            ptrace::detach(pid, None);
         }
     }
 
@@ -324,22 +377,11 @@ impl Daemon {
             return Seizure::GiveUp;
         }
 
-        let deadline = procfs::now_ms() + 200;
-        let status = loop {
-            match wait::waitpid(pid, wait::WALL | wait::WNOHANG) {
-                Ok(Some((waited, status))) if waited == pid => break status,
-                Ok(_) => {}
-                Err(_) => {
-                    ptrace::detach(pid, None);
-                    return Seizure::GiveUp;
-                }
-            }
-            if procfs::now_ms() >= deadline {
-                logw!("{exe} (pid {pid}): never stopped after being interrupted; skipping");
-                ptrace::detach(pid, None);
-                return Seizure::GiveUp;
-            }
-            thread::sleep(Duration::from_micros(500));
+        let deadline = procfs::now_ms() + INTERRUPT_TIMEOUT_MS;
+        let Some(status) = wait_for_stop(pid, deadline) else {
+            logw!("{exe} (pid {pid}): never stopped after being interrupted; skipping");
+            ptrace::detach(pid, None);
+            return Seizure::GiveUp;
         };
         if status.is_exited() || status.is_signaled() {
             ptrace::detach(pid, None);
@@ -394,6 +436,26 @@ impl Daemon {
 /// process name: whoever traces pid 1 owns the spawn path.
 pub(crate) fn init_holder() -> Option<Pid> {
     procfs::foreign_tracer(1)
+}
+
+fn wait_for_stop(pid: Pid, deadline: u64) -> Option<Status> {
+    loop {
+        match wait::waitpid(pid, wait::WALL | wait::WNOHANG) {
+            Ok(Some((waited, status))) if waited == pid => return Some(status),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+        if procfs::now_ms() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_micros(500));
+    }
+}
+
+fn stop_tracee(pid: Pid, timeout_ms: u64) -> Option<Status> {
+    ptrace::interrupt(pid).ok()?;
+    wait_for_stop(pid, procfs::now_ms() + timeout_ms)
 }
 
 /// Whether another Zygisk-family loader is around. The exact signal is a

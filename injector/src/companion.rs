@@ -23,6 +23,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::config;
 use crate::daemon::Daemon;
@@ -39,6 +40,7 @@ const COMMAND_MODULES: u32 = 2;
 const COMMAND_CONFIG: u32 = 3;
 const CONNECT: u8 = 1;
 const MAX_FIELD: u32 = 4096;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn create_listener() -> Option<UnixListener> {
     let _ = fs::remove_file(paths::COMPANION_SOCKET);
@@ -67,7 +69,10 @@ impl Daemon {
         };
         loop {
             match listener.accept() {
-                Ok((stream, _)) => self.handle_companion_request(stream),
+                Ok((stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(REQUEST_TIMEOUT));
+                    self.handle_companion_request(stream);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
@@ -134,28 +139,50 @@ impl Daemon {
                 };
 
                 for declaration in declarations {
-                    let matched = if declaration.target.by_name {
-                        declaration.target.value == process_name
-                    } else {
-                        declaration.target.value == process_path
-                    };
-                    if !matched {
-                        continue;
-                    }
-                    let Some(library) = resolve_module_library(&module_dir, &declaration.library)
-                    else {
-                        continue;
-                    };
-                    let descriptor = memfd_from_file(&library);
-                    send_module_record(stream, &library, declaration.companion, descriptor);
-                    if let Some(descriptor) = descriptor {
-                        sys::fs::close(descriptor);
-                    }
+                    send_declaration(
+                        stream,
+                        &module_dir,
+                        &declaration,
+                        process_name,
+                        process_path,
+                    );
                 }
             }
         }
 
         let _ = stream.write_all(&0u32.to_ne_bytes());
+    }
+}
+
+fn declaration_matches(
+    declaration: &targets::Declaration,
+    process_name: &str,
+    process_path: &str,
+) -> bool {
+    if declaration.target.by_name {
+        declaration.target.value == process_name
+    } else {
+        declaration.target.value == process_path
+    }
+}
+
+fn send_declaration(
+    stream: &UnixStream,
+    module_dir: &Path,
+    declaration: &targets::Declaration,
+    process_name: &str,
+    process_path: &str,
+) {
+    if !declaration_matches(declaration, process_name, process_path) {
+        return;
+    }
+    let Some(library) = resolve_module_library(module_dir, &declaration.library) else {
+        return;
+    };
+    let descriptor = memfd_from_file(&library);
+    send_module_record(stream, &library, declaration.companion, descriptor);
+    if let Some(descriptor) = descriptor {
+        sys::fs::close(descriptor);
     }
 }
 
@@ -165,9 +192,17 @@ fn resolve_module_library(module_dir: &Path, library: &str) -> Option<String> {
     } else {
         module_dir.join(library)
     };
-    fs::canonicalize(candidate)
-        .ok()
-        .map(|path| path.to_string_lossy().into_owned())
+    let library = fs::canonicalize(candidate).ok()?;
+    let module = fs::canonicalize(module_dir).ok()?;
+    if library == module || !library.starts_with(&module) {
+        loge!(
+            "module library {} is outside {}",
+            library.display(),
+            module.display()
+        );
+        return None;
+    }
+    Some(library.to_string_lossy().into_owned())
 }
 
 fn memfd_from_file(path: &str) -> Option<RawFd> {

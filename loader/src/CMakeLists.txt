@@ -10,8 +10,38 @@ add_library(elfutil STATIC utils/elf_util.cpp)
 target_include_directories(elfutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(elfutil PUBLIC lzma)
 
-add_library(loader SHARED loader.cpp)
-target_include_directories(loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(loader SHARED
+    entry.cpp
+    config/hooks.cpp
+    process/self.cpp
+    utils/dlext.cpp
+    hook/engine.cpp
+    hook/inline.cpp
+    hook/plt.cpp
+    hook/backend/dobby.cpp
+    hook/backend/shadowhook.cpp
+    hook/backend/rv64hook.cpp
+    hook/backend/lsplt.cpp
+    hook/backend/bytehook.cpp
+    hook/backend/xhook.cpp
+    api/hook.cpp
+    api/symbols.cpp
+    api/companion.cpp
+    api/runtime.cpp
+    api/table.cpp
+    hyos/state.cpp
+    hyos/hooks.cpp
+    hyos/runtime.cpp
+    ipc/socket.cpp
+    ipc/client.cpp
+    companion/process.cpp
+    module/entry.cpp
+    module/loader.cpp
+)
+target_include_directories(loader PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 if (ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "armeabi-v7a")
     target_include_directories(loader PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/shadowhook/shadowhook/src/main/cpp/include)

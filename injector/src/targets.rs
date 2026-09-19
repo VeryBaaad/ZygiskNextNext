@@ -148,6 +148,7 @@ pub fn collect(previous: &BTreeMap<String, ModuleInfo>) -> BTreeMap<String, Modu
 
         if let Some(previous) = previous.get(id) {
             module.processes = previous.processes.clone();
+            module.processes.retain(|(pid, _)| procfs::is_alive(*pid));
             module.failed = previous.failed.clone();
         }
         modules.insert(module.id.clone(), module);
@@ -186,10 +187,14 @@ impl Daemon {
         let name = procfs::process_name(pid, exe);
         let mut changed = false;
         for module in self.modules.values_mut() {
-            if module_matches(module, exe) {
-                module.processes.push((pid, name.clone()));
-                changed = true;
+            if !module_matches(module, exe) {
+                continue;
             }
+            if module.processes.iter().any(|(known, _)| *known == pid) {
+                continue;
+            }
+            module.processes.push((pid, name.clone()));
+            changed = true;
         }
         if changed {
             self.state.dirty = true;

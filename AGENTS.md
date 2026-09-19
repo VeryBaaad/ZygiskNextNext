@@ -24,9 +24,9 @@ To comply with this and maintain legal and technical independence, you must adhe
 
 ## ARCHITECTURE OVERVIEW
 
-- loader/: The core native component. Responsible for process injection, module loading, and hook management using Dobby (inline hooking) or rv64hook (inline hooking for riscv64), and LSPlt (PLT hooking).
+- loader/: The core native component (C++), injected into target processes; it loads modules and manages hooks using Dobby (inline hooking), shadowhook (arm/arm64), rv64hook (riscv64), and LSPlt / ByteHook / xHook (PLT hooking). Its sources are split by area under loader/src/: hook/ (engine selection, inline and PLT dispatch, one file per backend in hook/backend/), api/ (ZygiskNextAPI implementation and the per-version tables), hyos/ (HyperOS Runtime), ipc/ (injector daemon protocol), companion/ (companion process), module/ (zn_modules.txt matching and loading), config/, process/ and utils/ (ELF/maps helpers, memfd dlopen). Only entry.cpp exports anything (`znn_loader_init`).
 - injector/: The standalone injector executable shipped as bin/<abi>/injector. NOT part of loader/ and never built by it; it is a Rust crate (cargo) with its own Gradle module, which drives cargo for every shipped ABI. Every `unsafe` block lives under injector/src/sys/, and the crate root denies `unsafe_code` so that stays enforceable.
-- includes/: Native code shared by :loader and :injector (ZygiskNext API header, ELF symbol resolver, /proc maps helpers).
+- loader/src/include/: The ZygiskNext API header (zygisk_next_api.h) a module is built against; the ELF symbol resolver and /proc maps helpers live in loader/src/utils/.
 - external/: (repository root) Third-party sources used by more than one native module (currently the LZMA SDK). Dependencies of a single module stay in that module's src/external/.
 - module/: The Magisk / KernelSU / APatch module wrapper. Handles installation, environment setup, permission management, and status reporting. It collects the loader library and the injector binary from their own Gradle modules when building the zip.
 - webui/: Web-based user interface components (KernelSU WebUI) for module management and configuration.
@@ -37,6 +37,7 @@ To comply with this and maintain legal and technical independence, you must adhe
 2. Dependency Management: When interacting with Dobby, LSPlt, or rv64hook, respect their individual licenses and integration patterns.
 3. Error Handling: Fail gracefully. If a ZN module fails to load or a hook fails, log the error clearly and ensure both the injector and the host process continue to run without crashing.
 4. Rust Code (injector/): Keep every module small and single-purpose; a new file belongs in injector/src/ rather than growing main.rs. Confine FFI to injector/src/sys/ and wrap it in safe interfaces, then run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` for the Android targets before finishing.
+5. C++ Code (loader/): Keep every file small and single-purpose; a new file belongs in the loader/src/<area>/ directory it fits rather than growing an existing one. Hook backends stay one-per-file under loader/src/hook/backend/ behind the declarations in loader/src/hook/backend.h, and every index in the ZygiskNextAPI tables is chosen by the module's target_api_version in loader/src/api/table.cpp.
 
 ## WORKFLOW
 

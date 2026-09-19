@@ -19,7 +19,6 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -29,7 +28,7 @@ use crate::fileio;
 use crate::log::loge;
 use crate::paths;
 use crate::sys::fs as raw_fs;
-use crate::system::RootImpl;
+use crate::system::{self, RootImpl};
 use crate::targets::ModuleInfo;
 
 /// The snapshot the WebUI reads through `injector --ctl`.
@@ -272,17 +271,16 @@ fn root_implementation(root: &RootImpl) -> (&str, &str) {
 }
 
 fn set_prop_override(binary: &str, text: &str) -> bool {
-    Command::new(binary)
-        .args([
+    system::run_helper(
+        binary,
+        &[
             "module",
             "config",
             "set",
             "override.description",
             text,
             "--temp",
-        ])
-        .env("KSU_MODULE", MODULE_ID)
-        .env("AP_MODULE", MODULE_ID)
-        .status()
-        .is_ok_and(|status| status.success())
+        ],
+        &[("KSU_MODULE", MODULE_ID), ("AP_MODULE", MODULE_ID)],
+    )
 }

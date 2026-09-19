@@ -40,20 +40,17 @@
 
 namespace znn {
 
-// ---------------------------------------------------------------------------
-// LZMA ("alone" format) helper for .gnu_debugdata
-// ---------------------------------------------------------------------------
+//LZMA for .gnu_debugdata
 
 static void* LzmaAlloc(ISzAllocPtr, size_t size) { return malloc(size); }
 static void LzmaFree(ISzAllocPtr, void* addr) { free(addr); }
 static const ISzAlloc g_lzma_alloc = {LzmaAlloc, LzmaFree};
 
-// Decode an LZMA1 "alone" stream:
-//   [props(1)][dict size(4, LE)][uncompressed size(8, LE)][data]
+//[props][dict][size][data]
 static bool lzmaAloneDecompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out) {
     if (in_size < 13) return false;
 
-    // props: 1 byte (lc/lp/pb) + 4 bytes dictionary size.
+    //props: lc/lp/pb + dict size
     const Byte* props = in;
 
     uint64_t out_size = 0;
@@ -82,22 +79,29 @@ static bool isElf(const uint8_t* p, size_t size) {
            p[EI_MAG2] == ELFMAG2 && p[EI_MAG3] == ELFMAG3;
 }
 
-// ---------------------------------------------------------------------------
-// ElfImage
-// ---------------------------------------------------------------------------
+static bool sectionInFile(const ElfW(Shdr)& sh, size_t file_size) {
+    return sh.sh_offset <= file_size && sh.sh_size <= file_size - sh.sh_offset;
+}
 
-// Resolve a library name (a bare soname like "libc.so" or an absolute path) to
-// the path of the file mapped into this process, via /proc/self/maps.
+static bool sectionTableInFile(const ElfW(Ehdr)* ehdr, size_t file_size) {
+    const size_t table_size = static_cast<size_t>(ehdr->e_shnum) * sizeof(ElfW(Shdr));
+    const size_t table_offset = static_cast<size_t>(ehdr->e_shoff);
+    if (table_offset > file_size) return false;
+    return table_size <= file_size - table_offset;
+}
+
+static bool mapMatchesName(const MapEntry& m, const char* name) {
+    if (m.path.empty() || m.path[0] == '[') return false;
+    if (strchr(name, '/') != nullptr) return m.path == name;
+
+    const char* slash = strrchr(m.path.c_str(), '/');
+    return strcmp(slash ? slash + 1 : m.path.c_str(), name) == 0;
+}
+
+//soname or path, via maps
 std::string resolveMapPath(const char* name) {
-    const bool want_basename = (strchr(name, '/') == nullptr);
     for (const auto& m : parseMaps("self")) {
-        if (m.path.empty() || m.path[0] == '[') continue;
-
-        const char* basename = strrchr(m.path.c_str(), '/');
-        basename = basename ? basename + 1 : m.path.c_str();
-
-        const bool match = want_basename ? (strcmp(basename, name) == 0) : (m.path == name);
-        if (match) return m.path;
+        if (mapMatchesName(m, name)) return m.path;
     }
     return {};
 }
@@ -105,8 +109,6 @@ std::string resolveMapPath(const char* name) {
 ElfImage::ElfImage(std::string path, uintptr_t base) : path_(std::move(path)), base_(base) {
     int fd = open(path_.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        // `path` may be a bare library name (e.g. "libc.so"); resolve it to the
-        // actual mapped file path and try again.
         std::string resolved = resolveMapPath(path_.c_str());
         if (resolved.empty()) return;
         path_ = std::move(resolved);
@@ -121,13 +123,6 @@ ElfImage::ElfImage(std::string path, uintptr_t base) : path_(std::move(path)), b
     }
     file_size_ = static_cast<size_t>(st.st_size);
 
-    // IMPORTANT: resolve the load bias BEFORE mapping the file. The mmap
-    // below adds a fresh whole-file map of `path` to /proc/self/maps; if that
-    // map sorts below the real loaded image, findLibraryBase() would return
-    // the resolver's own file view as the base and every symbol address would
-    // be garbage (typically unmapped). The base must be derived from the
-    // library as actually loaded in this process, so it has to be computed
-    // before the resolver creates any mapping of its own.
     if (base_ == 0) base_ = findLibraryBase(path_.c_str(), file_size_);
 
     file_ = static_cast<uint8_t*>(mmap(nullptr, file_size_, PROT_READ, MAP_PRIVATE, fd, 0));
@@ -138,31 +133,24 @@ ElfImage::ElfImage(std::string path, uintptr_t base) : path_(std::move(path)), b
     }
 
     ehdr_ = reinterpret_cast<const ElfW(Ehdr)*>(file_);
-    if (!isElf(file_, file_size_) ||
-        ehdr_->e_shoff + static_cast<size_t>(ehdr_->e_shnum) * sizeof(ElfW(Shdr)) > file_size_) {
-        return;
-    }
-
-    if (base_ == 0 && ehdr_->e_type == ET_EXEC) base_ = 0;  // absolute addresses
+    if (!isElf(file_, file_size_) || !sectionTableInFile(ehdr_, file_size_)) return;
 
     is_dyn_ = (ehdr_->e_type == ET_DYN);
-    // A dynamic image must be loaded somewhere in this process; if we could not
-    // find its base, resolution would produce garbage addresses.
-    if (is_dyn_ && base_ == 0) return;
-
-    // Verify the base really points at a mapped ELF header (guards against a
-    // stale/wrong maps match).
-    if (is_dyn_ && memcmp(reinterpret_cast<const void*>(base_), ELFMAG, SELFMAG) != 0) {
+    if (!is_dyn_) {
+        //ET_EXEC is loaded at its link-time addresses: there is no bias to add
+        base_ = 0;
+    } else if (base_ == 0) {
+        return;
+    } else if (memcmp(reinterpret_cast<const void*>(base_), ELFMAG, SELFMAG) != 0) {
         ELF_LOGW("ElfImage %s: base %p does not look like an ELF header", path_.c_str(),
                  reinterpret_cast<void*>(base_));
         return;
     }
 
-    // Section header string table.
     if (ehdr_->e_shstrndx != SHN_UNDEF && ehdr_->e_shstrndx < ehdr_->e_shnum) {
         const ElfW(Shdr)* shdrs = reinterpret_cast<const ElfW(Shdr)*>(file_ + ehdr_->e_shoff);
         const ElfW(Shdr)* shstr = &shdrs[ehdr_->e_shstrndx];
-        if (shstr->sh_offset + shstr->sh_size <= file_size_)
+        if (sectionInFile(*shstr, file_size_))
             section_names_ = reinterpret_cast<const char*>(file_ + shstr->sh_offset);
     }
 
@@ -193,8 +181,6 @@ void ElfImage::parseSymbols(const ElfW(Shdr)* str_sh, const char* strtab,
 }
 
 bool ElfImage::parseGnuDebugData(const uint8_t* data, size_t size) const {
-    // Two common layouts: Android prepends a 4-byte CRC32 before the LZMA
-    // stream, the GNU toolchain emits the raw LZMA stream directly. Try both.
     for (size_t off : {static_cast<size_t>(4), static_cast<size_t>(0)}) {
         if (size <= off + 13) continue;
         std::vector<uint8_t> out;
@@ -223,26 +209,25 @@ void ElfImage::ensureParsed() const {
         return section_names_ + sh.sh_name;
     };
 
-    // Iterate section headers directly.
+    //walk section headers
     for (size_t i = 0; i < shnum; ++i) {
         const ElfW(Shdr)& sh = shdrs[i];
 
         if (sh.sh_type == SHT_SYMTAB || sh.sh_type == SHT_DYNSYM) {
             if (sh.sh_link >= shnum) continue;
             const ElfW(Shdr)& str_sh = shdrs[sh.sh_link];
-            if (str_sh.sh_offset + str_sh.sh_size > file_size_) continue;
+            if (!sectionInFile(sh, file_size_) || !sectionInFile(str_sh, file_size_)) continue;
             const char* strtab = reinterpret_cast<const char*>(file_ + str_sh.sh_offset);
             const ElfW(Sym)* symtab = reinterpret_cast<const ElfW(Sym)*>(file_ + sh.sh_offset);
             size_t count = (sh.sh_entsize) ? sh.sh_size / sh.sh_entsize : 0;
             parseSymbols(&str_sh, strtab, symtab, count, bias);
         } else if (sh.sh_type == SHT_PROGBITS && strcmp(sec_name(sh), ".gnu_debugdata") == 0 &&
-                   sh.sh_offset + sh.sh_size <= file_size_) {
+                   sectionInFile(sh, file_size_)) {
             parseGnuDebugData(file_ + sh.sh_offset, sh.sh_size);
         }
     }
 
-    // Mini debug info symbol table (addresses keep the same bias as the main image).
-    if (debugdata_ehdr_) {
+    if (debugdata_ehdr_ && sectionTableInFile(debugdata_ehdr_, debugdata_.size())) {
         const ElfW(Ehdr)* deh = debugdata_ehdr_;
         const ElfW(Shdr)* dshdrs =
             reinterpret_cast<const ElfW(Shdr)*>(debugdata_.data() + deh->e_shoff);
@@ -252,6 +237,9 @@ void ElfImage::ensureParsed() const {
             if (sh.sh_type != SHT_SYMTAB) continue;
             if (sh.sh_link >= dshnum) continue;
             const ElfW(Shdr)& str_sh = dshdrs[sh.sh_link];
+            if (!sectionInFile(sh, debugdata_.size()) || !sectionInFile(str_sh, debugdata_.size())) {
+                continue;
+            }
             const char* strtab = reinterpret_cast<const char*>(debugdata_.data() + str_sh.sh_offset);
             const ElfW(Sym)* symtab = reinterpret_cast<const ElfW(Sym)*>(debugdata_.data() + sh.sh_offset);
             size_t count = (sh.sh_entsize) ? sh.sh_size / sh.sh_entsize : 0;
@@ -259,12 +247,14 @@ void ElfImage::ensureParsed() const {
         }
     }
 
-    // De-duplicate by address, keeping the first occurrence.
-    std::unordered_set<uintptr_t> seen;
+    std::unordered_set<std::string> seen;
     std::vector<SymbolInfo> unique;
     unique.reserve(symbols_.size());
     for (auto& s : symbols_) {
-        if (seen.insert(s.addr).second) unique.push_back(std::move(s));
+        std::string key = s.name;
+        key += '\0';
+        key += std::to_string(s.addr);
+        if (seen.insert(std::move(key)).second) unique.push_back(std::move(s));
     }
     symbols_ = std::move(unique);
 }
@@ -294,7 +284,6 @@ void ElfImage::forEach(const std::function<bool(const char*, uintptr_t, size_t)>
 uintptr_t ElfImage::runtimeLookup(const char* name, size_t* size) const {
     if (!base_ || !name) return 0;
 
-    // The ELF header must be mapped at the load bias.
     const ElfW(Ehdr)* eh = reinterpret_cast<const ElfW(Ehdr)*>(base_);
     if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0) return 0;
 #if defined(__LP64__)
@@ -304,7 +293,6 @@ uintptr_t ElfImage::runtimeLookup(const char* name, size_t* size) const {
 #endif
     if (eh->e_ident[EI_DATA] != ELFDATA2LSB) return 0;
 
-    // Program headers -> PT_DYNAMIC -> dynsym/dynstr.
     const uint8_t* img = reinterpret_cast<const uint8_t*>(base_);
     const ElfW(Phdr)* ph = reinterpret_cast<const ElfW(Phdr)*>(img + eh->e_phoff);
     const ElfW(Dyn)* dyn = nullptr;
@@ -336,9 +324,6 @@ uintptr_t ElfImage::runtimeLookup(const char* name, size_t* size) const {
     }
     if (!symtab || !strtab || strsz == 0) return 0;
 
-    // Bound the scan to the memory between the symtab and the strtab (the
-    // dynsym precedes the dynstr in every standard layout); this keeps the
-    // scan inside mapped pages without needing the symbol count.
     const char* sym_end = reinterpret_cast<const char*>(symtab);
     size_t max_syms = strtab > sym_end ? static_cast<size_t>(strtab - sym_end) / sizeof(ElfW(Sym))
                                        : 0;
@@ -354,10 +339,6 @@ uintptr_t ElfImage::runtimeLookup(const char* name, size_t* size) const {
     }
     return 0;
 }
-
-// ---------------------------------------------------------------------------
-// Maps helpers
-// ---------------------------------------------------------------------------
 
 std::vector<MapEntry> parseMaps(const std::string& pid) {
     return parseMapsPath("/proc/" + pid + "/maps");
@@ -376,7 +357,6 @@ std::vector<MapEntry> parseMapsPath(const std::string& path) {
         unsigned long inode = 0;
         char perms[8] = {0};
         char mpath[512] = {0};
-        // 7f000000-7f001000 r--p 00000000 fe:01 123 /path/to/lib.so
         int n = sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %7s %" SCNxPTR " %x:%x %lu %511[^\n]", &start,
                        &end, perms, &offset, &devmaj, &devmin, &inode, mpath);
         if (n < 7) continue;
@@ -401,29 +381,14 @@ std::vector<MapEntry> parseMapsPath(const std::string& path) {
 
 uintptr_t findLibraryBaseInMaps(const std::vector<MapEntry>& maps, const char* name,
                                 size_t whole_size) {
-    bool want_basename = (strchr(name, '/') == nullptr);
     for (const auto& m : maps) {
-        if (m.path.empty() || m.path[0] == '[') continue;
+        if (!mapMatchesName(m, name)) continue;
 
-        const char* basename = strrchr(m.path.c_str(), '/');
-        basename = basename ? basename + 1 : m.path.c_str();
-
-        bool match = want_basename ? (strcmp(basename, name) == 0) : (m.path == name);
-        if (!match) continue;
-
-        // Skip a raw whole-file mapping of the same library (as created by
-        // ElfImage's own mmap, or by another still-live resolver). It is a
-        // plain data view of the file, not the image loaded by the linker,
-        // and would otherwise be picked up as the load base when it sorts
-        // below the real mapping.
         if (whole_size != 0) {
             const uintptr_t span = m.end - m.start;
             if (span >= whole_size && span - whole_size < 4096) continue;
         }
 
-        // For an ET_DYN image every map entry's file offset is relative to the
-        // load bias, so start - offset yields the bias from ANY segment — do
-        // not rely on the offset-0 header map being present or listed first.
         if (m.start >= m.offset) return m.start - m.offset;
     }
     return 0;
@@ -442,4 +407,4 @@ uintptr_t resolveLibrarySymbol(const char* lib_name, const char* symbol, size_t*
     return s->addr;
 }
 
-}  // namespace znn
+}  //namespace znn

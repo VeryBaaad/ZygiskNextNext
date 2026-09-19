@@ -112,15 +112,15 @@ pub fn setup_call(
         }
         Arch::X86 => {
             let mut stack = regs.sp();
-            stack = stack.wrapping_sub(4);
-            if !write_memory(pid, stack, &(return_to as u32).to_ne_bytes()) {
-                return false;
-            }
             for argument in args.iter().rev() {
                 stack = stack.wrapping_sub(4);
                 if !write_memory(pid, stack, &(*argument as u32).to_ne_bytes()) {
                     return false;
                 }
+            }
+            stack = stack.wrapping_sub(4);
+            if !write_memory(pid, stack, &(return_to as u32).to_ne_bytes()) {
+                return false;
             }
             regs.set_sp(stack);
             regs.set_pc(function);
