@@ -1,7 +1,8 @@
-import '@material/web/elevation/elevation.js';
-import '@material/web/icon/icon.js';
+import '@m3e/web/card';
+import '@m3e/web/icon';
 
 import { onLocaleChange, t } from '../i18n';
+import { escapeHtml } from '../util/html';
 
 export class EmptyState extends HTMLElement {
   private unsub?: () => void;
@@ -18,13 +19,12 @@ export class EmptyState extends HTMLElement {
 
   private render(): void {
     this.innerHTML = `
-      <div class="md-card empty-card">
-        <md-elevation></md-elevation>
-        <div class="card-body empty-body">
-          <md-icon>info</md-icon>
-          <span>${t('empty.title')}</span>
+      <m3e-card class="empty-card" variant="filled">
+        <div slot="content" class="empty-body">
+          <m3e-icon name="info"></m3e-icon>
+          <span>${escapeHtml(t('empty.title'))}</span>
         </div>
-      </div>`;
+      </m3e-card>`;
   }
 }
 

@@ -1,5 +1,4 @@
-import '@material/web/divider/divider.js';
-import '@material/web/elevation/elevation.js';
+import '@m3e/web/card';
 
 import type { InjectorStatus } from '../api/injector';
 import { cleanVersion, type SystemInfo } from '../api/system';
@@ -9,6 +8,11 @@ import { escapeHtml } from '../util/html';
 interface RootEntry {
   name: string;
   version: string | null;
+}
+
+interface InfoRow {
+  label: string;
+  value: string;
 }
 
 export class InfoCard extends HTMLElement {
@@ -59,40 +63,34 @@ export class InfoCard extends HTMLElement {
     return parts.join(', ');
   }
 
-  private render(): void {
+  private rows(): InfoRow[] {
     const sdk = this.data.sdk > 0 ? String(this.data.sdk) : t('info.unknown');
+    return [
+      { label: t('info.rootImpl'), value: this.rootImplText() },
+      { label: 'Kernel', value: this.data.kernel || t('info.unknown') },
+      { label: 'Android SDK', value: sdk },
+      { label: 'ABI', value: this.abiText() },
+      { label: t('info.mode'), value: this.modeText() },
+    ];
+  }
+
+  private render(): void {
+    const rows = this.rows()
+      .map(
+        (row) => `
+          <div class="info-row">
+            <span class="info-label">${escapeHtml(row.label)}</span>
+            <span class="info-value">${escapeHtml(row.value)}</span>
+          </div>`,
+      )
+      .join('');
+
     this.innerHTML = `
-      <div class="md-card info-card">
-        <md-elevation></md-elevation>
-        <div class="card-body">
-          <div class="card-title">${t('info.title')}</div>
-          <md-divider></md-divider>
-          <div class="info-row">
-            <span class="info-label">${t('info.rootImpl')}</span>
-            <span class="info-value">${escapeHtml(this.rootImplText())}</span>
-          </div>
-          <md-divider></md-divider>
-          <div class="info-row">
-            <span class="info-label">Kernel</span>
-            <span class="info-value">${escapeHtml(this.data.kernel || t('info.unknown'))}</span>
-          </div>
-          <md-divider></md-divider>
-          <div class="info-row">
-            <span class="info-label">Android SDK</span>
-            <span class="info-value">${escapeHtml(sdk)}</span>
-          </div>
-          <md-divider></md-divider>
-          <div class="info-row">
-            <span class="info-label">ABI</span>
-            <span class="info-value">${escapeHtml(this.abiText())}</span>
-          </div>
-          <md-divider></md-divider>
-          <div class="info-row">
-            <span class="info-label">${t('info.mode')}</span>
-            <span class="info-value">${escapeHtml(this.modeText())}</span>
-          </div>
+      <m3e-card class="info-card" variant="filled">
+        <div slot="content" class="card-body">
+          ${rows}
         </div>
-      </div>`;
+      </m3e-card>`;
   }
 }
 

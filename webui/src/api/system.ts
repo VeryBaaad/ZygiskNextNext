@@ -20,5 +20,5 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 
 export function cleanVersion(raw: string | null): string | null {
   if (!raw) return null;
-  return raw.replace(/^(ksud|apd|magisk)\s+/i, '').trim() || null;
+  return raw.replace(/^(ksud|apd|magisk)\s+/i, '').replace(/^v/i, '').trim() || null;
 }

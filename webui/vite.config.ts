@@ -1,16 +1,38 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { resolve } from 'node:path';
 
 const env = (name: string, fallback: string): string =>
   process.env[name] || fallback;
 
+const ksuPreviewMock = (): Plugin => ({
+  name: 'znn-ksu-preview-mock',
+  apply: 'serve',
+  transformIndexHtml: {
+    order: 'pre',
+    handler: (html) => ({
+      html,
+      tags: [
+        {
+          tag: 'script',
+          attrs: { src: '/dev/ksu-mock.js' },
+          injectTo: 'head',
+        },
+      ],
+    }),
+  },
+});
+
 export default defineConfig(() => ({
   base: './',
+  plugins: [ksuPreviewMock()],
   define: {
     __ZNN_MODULE_ID__: JSON.stringify(env('ZNN_MODULE_ID', 'zygisknextsu')),
     __ZNN_MODULE_NAME__: JSON.stringify(env('ZNN_MODULE_NAME', 'Zygisk Next Next')),
-    __ZNN_VER_NAME__: JSON.stringify(env('ZNN_VER_NAME', 'v1-0.1.0')),
+    __ZNN_VER_NAME__: JSON.stringify(env('ZNN_VER_NAME', 'v0.0.0')),
     __ZNN_COMMIT_HASH__: JSON.stringify(env('ZNN_COMMIT_HASH', 'unknown')),
+  },
+  server: {
+    open: true,
   },
   build: {
     outDir: resolve(__dirname, '../module/webroot'),

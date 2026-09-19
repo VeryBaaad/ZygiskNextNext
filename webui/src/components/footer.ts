@@ -1,8 +1,9 @@
-import '@material/web/button/outlined-button.js';
-import '@material/web/icon/icon.js';
+import '@m3e/web/button';
+import '@m3e/web/icon';
 
 import { GITHUB_URL } from '../app-info';
 import { onLocaleChange, t } from '../i18n';
+import { escapeHtml } from '../util/html';
 
 const GITHUB_PATH =
   'M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 ' +
@@ -29,15 +30,13 @@ export class Footer extends HTMLElement {
 
   private render(): void {
     this.innerHTML = `
-      <div class="footer">
-        <md-outlined-button class="github-btn" href="${GITHUB_URL}" target="_blank"
-                            rel="noopener noreferrer">
-          <md-icon slot="icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="${GITHUB_PATH}"/></svg>
-          </md-icon>
-          ${t('footer.github')}
-        </md-outlined-button>
-      </div>`;
+      <m3e-button class="footer-btn" variant="tonal" size="small" href="${GITHUB_URL}"
+                  target="_blank" rel="noopener noreferrer">
+        <svg slot="icon" class="github-logo" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="${GITHUB_PATH}"/>
+        </svg>
+        ${escapeHtml(t('footer.github'))}
+      </m3e-button>`;
   }
 }
 

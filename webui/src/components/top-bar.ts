@@ -1,11 +1,13 @@
-import '@material/web/icon/icon.js';
-import '@material/web/iconbutton/icon-button.js';
-import '@material/web/menu/menu.js';
-import '@material/web/menu/menu-item.js';
+import '@m3e/web/app-bar';
+import '@m3e/web/icon';
+import '@m3e/web/icon-button';
+import '@m3e/web/menu';
 
 import { MODULE_ID, MODULE_NAME } from '../app-info';
+import { isKsuAvailable } from '../api/ksu';
 import { getLocale, LOCALE_LABELS, onLocaleChange, setLocale, t, type Locale } from '../i18n';
-import { cycleTheme, getThemeMode, type ThemeMode } from '../theme';
+import { getThemeMode, onThemeChange, setThemeMode, type ThemeMode } from '../theme';
+import { escapeHtml } from '../util/html';
 
 const THEME_ICONS: Record<ThemeMode, string> = {
   auto: 'brightness_auto',
@@ -13,61 +15,106 @@ const THEME_ICONS: Record<ThemeMode, string> = {
   dark: 'dark_mode',
 };
 
+const THEME_MODES: ThemeMode[] = ['auto', 'light', 'dark'];
+
+const THEME_LABEL_KEYS: Record<ThemeMode, string> = {
+  auto: 'theme.auto',
+  light: 'theme.light',
+  dark: 'theme.dark',
+};
+
 export class TopBar extends HTMLElement {
-  private unsub?: () => void;
+  private unsubLocale?: () => void;
+  private unsubTheme?: () => void;
+  private refreshing = false;
+
+  set refresh(value: boolean) {
+    if (value === this.refreshing) return;
+    this.refreshing = value;
+    this.render();
+  }
+
+  get refresh(): boolean {
+    return this.refreshing;
+  }
 
   connectedCallback(): void {
     this.render();
-    this.unsub = onLocaleChange(() => this.render());
+    this.unsubLocale = onLocaleChange(() => this.render());
+    this.unsubTheme = onThemeChange(() => this.render());
   }
 
   disconnectedCallback(): void {
-    this.unsub?.();
-    this.unsub = undefined;
+    this.unsubLocale?.();
+    this.unsubTheme?.();
+    this.unsubLocale = undefined;
+    this.unsubTheme = undefined;
   }
 
   private render(): void {
     const locale = getLocale();
+    const mode = getThemeMode();
+    const refresh = isKsuAvailable()
+      ? `
+        <m3e-icon-button class="top-bar-refresh ${this.refreshing ? 'is-loading' : ''}"
+                         slot="trailing" aria-label="${escapeHtml(t('actions.refresh'))}"
+                         ${this.refreshing ? 'disabled' : ''}>
+          <m3e-icon name="refresh"></m3e-icon>
+        </m3e-icon-button>`
+      : '';
+
     this.innerHTML = `
-      <header class="top-bar">
-        <span class="top-bar-title" title="${MODULE_ID}">${MODULE_NAME}</span>
-        <div class="top-bar-actions">
-          <md-icon-button id="theme-btn" aria-label="${t('topbar.themeLabel')}">
-            <md-icon>${THEME_ICONS[getThemeMode()]}</md-icon>
-          </md-icon-button>
-          <md-icon-button id="lang-btn" aria-label="${t('topbar.langLabel')}">
-            <md-icon>language</md-icon>
-          </md-icon-button>
-        </div>
-      </header>
-      <md-menu id="lang-menu" anchor="lang-btn" positioning="fixed">
+      <m3e-app-bar class="top-bar" size="small">
+        <span slot="title" class="top-bar-title" title="${escapeHtml(MODULE_ID)}">${escapeHtml(MODULE_NAME)}</span>
+        ${refresh}
+        <m3e-icon-button slot="trailing" aria-label="${escapeHtml(t('topbar.themeLabel'))}">
+          <m3e-menu-trigger for="znn-theme-menu">
+            <m3e-icon name="${THEME_ICONS[mode]}"></m3e-icon>
+          </m3e-menu-trigger>
+        </m3e-icon-button>
+        <m3e-icon-button slot="trailing" aria-label="${escapeHtml(t('topbar.langLabel'))}">
+          <m3e-menu-trigger for="znn-locale-menu">
+            <m3e-icon name="language"></m3e-icon>
+          </m3e-menu-trigger>
+        </m3e-icon-button>
+      </m3e-app-bar>
+
+      <m3e-menu id="znn-theme-menu" position-x="before">
+        ${THEME_MODES.map(
+          (m) => `
+        <m3e-menu-item-radio data-mode="${m}" ${m === mode ? 'checked' : ''}>
+          ${escapeHtml(t(THEME_LABEL_KEYS[m]))}
+        </m3e-menu-item-radio>`,
+        ).join('')}
+      </m3e-menu>
+
+      <m3e-menu id="znn-locale-menu" position-x="before">
         ${(Object.keys(LOCALE_LABELS) as Locale[])
           .map(
             (l) => `
-          <md-menu-item data-locale="${l}">
-            ${l === locale ? '<md-icon slot="start">check</md-icon>' : ''}
-            <div slot="headline">${LOCALE_LABELS[l]}</div>
-          </md-menu-item>`,
+        <m3e-menu-item-radio data-locale="${l}" ${l === locale ? 'checked' : ''}>
+          ${escapeHtml(LOCALE_LABELS[l])}
+        </m3e-menu-item-radio>`,
           )
           .join('')}
-      </md-menu>
+      </m3e-menu>
     `;
 
-    this.querySelector('#theme-btn')!.addEventListener('click', () => {
-      cycleTheme();
-      this.render();
+    this.querySelector('.top-bar-refresh')?.addEventListener('click', () => {
+      this.dispatchEvent(new CustomEvent('znn-refresh'));
     });
 
-    const langBtn = this.querySelector('#lang-btn')!;
-    const menu = this.querySelector('#lang-menu') as unknown as { open: boolean } & HTMLElement;
-    langBtn.addEventListener('click', () => {
-      menu.open = !menu.open;
-    });
-
-    this.querySelectorAll('md-menu-item').forEach((item) => {
+    this.querySelectorAll<HTMLElement>('m3e-menu-item-radio[data-mode]').forEach((item) => {
       item.addEventListener('click', () => {
-        const loc = item.getAttribute('data-locale') as Locale | null;
-        if (loc && loc !== locale) setLocale(loc);
+        const next = item.getAttribute('data-mode') as ThemeMode | null;
+        if (next) setThemeMode(next);
+      });
+    });
+
+    this.querySelectorAll<HTMLElement>('m3e-menu-item-radio[data-locale]').forEach((item) => {
+      item.addEventListener('click', () => {
+        const next = item.getAttribute('data-locale') as Locale | null;
+        if (next) setLocale(next);
       });
     });
   }
