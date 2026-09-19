@@ -46,9 +46,18 @@ pub fn send_with_fd(socket: RawFd, payload: &[u8], descriptor: Option<RawFd>) ->
 pub fn recv_with_fd(socket: RawFd, payload: &mut [u8]) -> io::Result<(usize, Option<RawFd>)> {
     let mut payload = [IoSliceMut::new(payload)];
     let mut control = cmsg_space!([RawFd; 1]);
-    let message =
-        socket::recvmsg::<UnixAddr>(socket, &mut payload, Some(&mut control), MsgFlags::empty())
-            .map_err(io::Error::from)?;
+    let message = loop {
+        match socket::recvmsg::<UnixAddr>(
+            socket,
+            &mut payload,
+            Some(&mut control),
+            MsgFlags::empty(),
+        ) {
+            Ok(message) => break message,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    };
 
     let mut descriptor = None;
     for control in message.cmsgs().map_err(io::Error::from)? {

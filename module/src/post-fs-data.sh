@@ -2,7 +2,7 @@
 
 MODDIR=${0%/*}
 
-cd "$MODDIR"
+cd "$MODDIR" || exit 1
 
 mkdir -p /data/adb/zygisknextsu
 

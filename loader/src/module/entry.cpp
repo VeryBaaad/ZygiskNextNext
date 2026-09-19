@@ -26,7 +26,43 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <algorithm>
+
 namespace znn::module {
+namespace {
+
+std::vector<std::string> splitWhitespace(const char* line) {
+    std::vector<std::string> tokens;
+    const char* p = line;
+    while (*p) {
+        while (*p && isspace(static_cast<unsigned char>(*p))) ++p;
+        const char* start = p;
+        while (*p && !isspace(static_cast<unsigned char>(*p))) ++p;
+        if (p > start) tokens.emplace_back(start, static_cast<size_t>(p - start));
+    }
+    return tokens;
+}
+
+bool parseDeclaration(const std::vector<std::string>& tokens, const std::string& moddir, Entry& out) {
+    if (tokens.size() < 2) return false;
+
+    if (tokens[0].rfind("path=", 0) == 0) {
+        out.is_name = false;
+    } else if (tokens[0].rfind("name=", 0) == 0) {
+        out.is_name = true;
+    } else {
+        return false;
+    }
+
+    const auto flags_end = tokens.end() - 1;
+    out.dir = moddir;
+    out.target = tokens[0].substr(5);
+    out.companion = std::find(tokens.begin() + 1, flags_end, "companion") != flags_end;
+    out.lib = tokens.back();
+    return true;
+}
+
+}  //namespace
 
 std::vector<Entry> parseManifest(const std::string& moddir, const std::string& file) {
     std::vector<Entry> out;
@@ -36,37 +72,8 @@ std::vector<Entry> parseManifest(const std::string& moddir, const std::string& f
     char* line = nullptr;
     size_t cap = 0;
     while (getline(&line, &cap, f) > 0) {
-        std::string l = line;
-
-        std::vector<std::string> toks;
-        size_t i = 0;
-        while (i < l.size()) {
-            while (i < l.size() && isspace(static_cast<unsigned char>(l[i]))) ++i;
-            size_t j = i;
-            while (j < l.size() && !isspace(static_cast<unsigned char>(l[j]))) ++j;
-            if (j > i) toks.push_back(l.substr(i, j - i));
-            i = j;
-        }
-        if (toks.size() < 2) continue;
-
         Entry e;
-        e.dir = moddir;
-
-        if (toks[0].rfind("path=", 0) == 0) {
-            e.is_name = false;
-            e.target = toks[0].substr(5);
-        } else if (toks[0].rfind("name=", 0) == 0) {
-            e.is_name = true;
-            e.target = toks[0].substr(5);
-        } else {
-            continue;
-        }
-
-        for (size_t k = 1; k + 1 < toks.size(); ++k) {
-            if (toks[k] == "companion") e.companion = true;
-        }
-        e.lib = toks.back();
-        out.push_back(std::move(e));
+        if (parseDeclaration(splitWhitespace(line), moddir, e)) out.push_back(std::move(e));
     }
     free(line);
     fclose(f);

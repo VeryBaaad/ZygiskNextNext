@@ -34,7 +34,7 @@ use crate::procfs;
 use crate::state::StateWriter;
 use crate::sys::fs as raw_fs;
 use crate::sys::wait;
-use crate::sys::{Pid, ptrace, signal};
+use crate::sys::{Pid, process, signal};
 use crate::system::{self, SystemInfo};
 use crate::targets::{ModuleInfo, Target};
 use crate::trace::Tracee;
@@ -43,6 +43,7 @@ pub const MODULE_ID: &str = "zygisknextsu";
 pub const VERSION: &str = env!("ZNN_VERSION");
 
 static RESCAN: AtomicBool = AtomicBool::new(false);
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tracking {
@@ -74,8 +75,6 @@ pub struct Daemon {
     pub done: HashSet<Pid>,
     pub ignored: HashSet<Pid>,
     pub candidates: HashMap<Pid, Candidate>,
-    /// Tracers we already reported as foreign loaders, so the log stays readable
-    /// while a process is held by one of them.
     pub yielded: HashSet<Pid>,
     pub ignored_rescans: u32,
     pub listener: Option<UnixListener>,
@@ -114,6 +113,9 @@ impl Daemon {
 
         daemon.check_loaders();
         signal::set_handler(signal::SIGHUP, on_sighup);
+        //`--ctl exit` and `--ctl restart` end us with SIGTERM, and a tracee that
+        //is parked on an entry breakpoint must not be left holding it
+        signal::set_handler(signal::SIGTERM, on_sigterm);
 
         daemon.collect_targets();
         logi!("collected {} zn modules", daemon.targets.len());
@@ -128,6 +130,12 @@ impl Daemon {
         self.last_state_write_ms = procfs::now_ms();
 
         loop {
+            if SHUTDOWN.swap(false, Ordering::SeqCst) {
+                logi!("shutting down: releasing the tracees we are holding");
+                self.release_tracees();
+                break;
+            }
+
             if RESCAN.swap(false, Ordering::SeqCst) {
                 self.collect_targets();
                 self.apply_requested_mode();
@@ -146,12 +154,10 @@ impl Daemon {
                         && now - self.last_zygisk_check_ms >= 5000
                     {
                         self.last_zygisk_check_ms = now;
-                        if crate::mode::monitor_present() {
+                        if crate::mode::monitor_present() && self.hand_over_init() {
                             logw!(
-                                "another Zygisk-family loader is running; yielding init and switching to proc mode (poll /proc)"
+                                "another Zygisk-family loader is running; yielded init and switched to proc mode (poll /proc)"
                             );
-                            ptrace::detach(1, None);
-                            self.tracees.remove(&1);
                             self.mode = Tracking::Proc;
                             self.state.dirty = true;
                         }
@@ -184,6 +190,8 @@ impl Daemon {
                 Tracking::Ptrace => Duration::from_millis(1),
             });
         }
+
+        process::exit_now(0)
     }
 
     fn check_loaders(&mut self) {
@@ -236,4 +244,8 @@ impl Daemon {
 
 extern "C" fn on_sighup(_signal: i32) {
     RESCAN.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn on_sigterm(_signal: i32) {
+    SHUTDOWN.store(true, Ordering::SeqCst);
 }

@@ -79,17 +79,29 @@ static bool isElf(const uint8_t* p, size_t size) {
            p[EI_MAG2] == ELFMAG2 && p[EI_MAG3] == ELFMAG3;
 }
 
+static bool sectionInFile(const ElfW(Shdr)& sh, size_t file_size) {
+    return sh.sh_offset <= file_size && sh.sh_size <= file_size - sh.sh_offset;
+}
+
+static bool sectionTableInFile(const ElfW(Ehdr)* ehdr, size_t file_size) {
+    const size_t table_size = static_cast<size_t>(ehdr->e_shnum) * sizeof(ElfW(Shdr));
+    const size_t table_offset = static_cast<size_t>(ehdr->e_shoff);
+    if (table_offset > file_size) return false;
+    return table_size <= file_size - table_offset;
+}
+
+static bool mapMatchesName(const MapEntry& m, const char* name) {
+    if (m.path.empty() || m.path[0] == '[') return false;
+    if (strchr(name, '/') != nullptr) return m.path == name;
+
+    const char* slash = strrchr(m.path.c_str(), '/');
+    return strcmp(slash ? slash + 1 : m.path.c_str(), name) == 0;
+}
+
 //soname or path, via maps
 std::string resolveMapPath(const char* name) {
-    const bool want_basename = (strchr(name, '/') == nullptr);
     for (const auto& m : parseMaps("self")) {
-        if (m.path.empty() || m.path[0] == '[') continue;
-
-        const char* basename = strrchr(m.path.c_str(), '/');
-        basename = basename ? basename + 1 : m.path.c_str();
-
-        const bool match = want_basename ? (strcmp(basename, name) == 0) : (m.path == name);
-        if (match) return m.path;
+        if (mapMatchesName(m, name)) return m.path;
     }
     return {};
 }
@@ -121,17 +133,15 @@ ElfImage::ElfImage(std::string path, uintptr_t base) : path_(std::move(path)), b
     }
 
     ehdr_ = reinterpret_cast<const ElfW(Ehdr)*>(file_);
-    if (!isElf(file_, file_size_) ||
-        ehdr_->e_shoff + static_cast<size_t>(ehdr_->e_shnum) * sizeof(ElfW(Shdr)) > file_size_) {
-        return;
-    }
-
-    if (base_ == 0 && ehdr_->e_type == ET_EXEC) base_ = 0;  //ET_EXEC: absolute
+    if (!isElf(file_, file_size_) || !sectionTableInFile(ehdr_, file_size_)) return;
 
     is_dyn_ = (ehdr_->e_type == ET_DYN);
-    if (is_dyn_ && base_ == 0) return;
-
-    if (is_dyn_ && memcmp(reinterpret_cast<const void*>(base_), ELFMAG, SELFMAG) != 0) {
+    if (!is_dyn_) {
+        //ET_EXEC is loaded at its link-time addresses: there is no bias to add
+        base_ = 0;
+    } else if (base_ == 0) {
+        return;
+    } else if (memcmp(reinterpret_cast<const void*>(base_), ELFMAG, SELFMAG) != 0) {
         ELF_LOGW("ElfImage %s: base %p does not look like an ELF header", path_.c_str(),
                  reinterpret_cast<void*>(base_));
         return;
@@ -140,7 +150,7 @@ ElfImage::ElfImage(std::string path, uintptr_t base) : path_(std::move(path)), b
     if (ehdr_->e_shstrndx != SHN_UNDEF && ehdr_->e_shstrndx < ehdr_->e_shnum) {
         const ElfW(Shdr)* shdrs = reinterpret_cast<const ElfW(Shdr)*>(file_ + ehdr_->e_shoff);
         const ElfW(Shdr)* shstr = &shdrs[ehdr_->e_shstrndx];
-        if (shstr->sh_offset + shstr->sh_size <= file_size_)
+        if (sectionInFile(*shstr, file_size_))
             section_names_ = reinterpret_cast<const char*>(file_ + shstr->sh_offset);
     }
 
@@ -206,18 +216,18 @@ void ElfImage::ensureParsed() const {
         if (sh.sh_type == SHT_SYMTAB || sh.sh_type == SHT_DYNSYM) {
             if (sh.sh_link >= shnum) continue;
             const ElfW(Shdr)& str_sh = shdrs[sh.sh_link];
-            if (str_sh.sh_offset + str_sh.sh_size > file_size_) continue;
+            if (!sectionInFile(sh, file_size_) || !sectionInFile(str_sh, file_size_)) continue;
             const char* strtab = reinterpret_cast<const char*>(file_ + str_sh.sh_offset);
             const ElfW(Sym)* symtab = reinterpret_cast<const ElfW(Sym)*>(file_ + sh.sh_offset);
             size_t count = (sh.sh_entsize) ? sh.sh_size / sh.sh_entsize : 0;
             parseSymbols(&str_sh, strtab, symtab, count, bias);
         } else if (sh.sh_type == SHT_PROGBITS && strcmp(sec_name(sh), ".gnu_debugdata") == 0 &&
-                   sh.sh_offset + sh.sh_size <= file_size_) {
+                   sectionInFile(sh, file_size_)) {
             parseGnuDebugData(file_ + sh.sh_offset, sh.sh_size);
         }
     }
 
-    if (debugdata_ehdr_) {
+    if (debugdata_ehdr_ && sectionTableInFile(debugdata_ehdr_, debugdata_.size())) {
         const ElfW(Ehdr)* deh = debugdata_ehdr_;
         const ElfW(Shdr)* dshdrs =
             reinterpret_cast<const ElfW(Shdr)*>(debugdata_.data() + deh->e_shoff);
@@ -227,6 +237,9 @@ void ElfImage::ensureParsed() const {
             if (sh.sh_type != SHT_SYMTAB) continue;
             if (sh.sh_link >= dshnum) continue;
             const ElfW(Shdr)& str_sh = dshdrs[sh.sh_link];
+            if (!sectionInFile(sh, debugdata_.size()) || !sectionInFile(str_sh, debugdata_.size())) {
+                continue;
+            }
             const char* strtab = reinterpret_cast<const char*>(debugdata_.data() + str_sh.sh_offset);
             const ElfW(Sym)* symtab = reinterpret_cast<const ElfW(Sym)*>(debugdata_.data() + sh.sh_offset);
             size_t count = (sh.sh_entsize) ? sh.sh_size / sh.sh_entsize : 0;
@@ -234,11 +247,14 @@ void ElfImage::ensureParsed() const {
         }
     }
 
-    std::unordered_set<uintptr_t> seen;
+    std::unordered_set<std::string> seen;
     std::vector<SymbolInfo> unique;
     unique.reserve(symbols_.size());
     for (auto& s : symbols_) {
-        if (seen.insert(s.addr).second) unique.push_back(std::move(s));
+        std::string key = s.name;
+        key += '\0';
+        key += std::to_string(s.addr);
+        if (seen.insert(std::move(key)).second) unique.push_back(std::move(s));
     }
     symbols_ = std::move(unique);
 }
@@ -365,15 +381,8 @@ std::vector<MapEntry> parseMapsPath(const std::string& path) {
 
 uintptr_t findLibraryBaseInMaps(const std::vector<MapEntry>& maps, const char* name,
                                 size_t whole_size) {
-    bool want_basename = (strchr(name, '/') == nullptr);
     for (const auto& m : maps) {
-        if (m.path.empty() || m.path[0] == '[') continue;
-
-        const char* basename = strrchr(m.path.c_str(), '/');
-        basename = basename ? basename + 1 : m.path.c_str();
-
-        bool match = want_basename ? (strcmp(basename, name) == 0) : (m.path == name);
-        if (!match) continue;
+        if (!mapMatchesName(m, name)) continue;
 
         if (whole_size != 0) {
             const uintptr_t span = m.end - m.start;

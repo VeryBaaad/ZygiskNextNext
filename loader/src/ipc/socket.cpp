@@ -21,6 +21,7 @@
 
 #include "ipc/protocol.h"
 
+#include <errno.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -51,10 +52,20 @@ bool writeAll(int fd, const void* buf, size_t len) {
     size_t off = 0;
     while (off < len) {
         const ssize_t n = write(fd, p + off, len - off);
+        if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         off += static_cast<size_t>(n);
     }
     return true;
+}
+
+static void takeFd(struct msghdr& msg, int* out_fd) {
+    for (struct cmsghdr* c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+        if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) continue;
+        if (c->cmsg_len < CMSG_LEN(sizeof(int))) continue;
+        memcpy(out_fd, CMSG_DATA(c), sizeof(int));
+        return;
+    }
 }
 
 bool recvFull(int fd, void* buf, size_t len, int* out_fd) {
@@ -71,14 +82,10 @@ bool recvFull(int fd, void* buf, size_t len, int* out_fd) {
             msg.msg_controllen = sizeof(cmsg_buf);
         }
         const ssize_t n = recvmsg(fd, &msg, 0);
+        if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         if (out_fd) {
-            for (struct cmsghdr* c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
-                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
-                    memcpy(out_fd, CMSG_DATA(c), sizeof(int));
-                    break;
-                }
-            }
+            takeFd(msg, out_fd);
             out_fd = nullptr;
         }
         off += static_cast<size_t>(n);

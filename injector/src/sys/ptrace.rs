@@ -92,10 +92,15 @@ pub fn cont(pid: Pid, signal_number: Option<i32>) {
 }
 
 pub fn detach(pid: Pid, signal_number: Option<i32>) {
-    let _ = ptrace::detach(
+    let _ = detach_result(pid, signal_number);
+}
+
+pub fn detach_result(pid: Pid, signal_number: Option<i32>) -> io::Result<()> {
+    ptrace::detach(
         NixPid::from_raw(pid),
         signal_number.and_then(signal::from_number),
-    );
+    )
+    .map_err(io::Error::from)
 }
 
 fn regset(request: libc::c_int, pid: Pid, base: *mut c_void, length: usize) -> io::Result<()> {

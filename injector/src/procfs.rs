@@ -73,6 +73,10 @@ pub fn read_exe_path(pid: Pid) -> String {
     }
 }
 
+pub fn is_alive(pid: Pid) -> bool {
+    !read_exe_path(pid).is_empty()
+}
+
 pub fn map_path_equals_exe(map_path: &str, exe: &str) -> bool {
     map_path == exe
         || (map_path.len() == exe.len() + DELETED_SUFFIX.len()

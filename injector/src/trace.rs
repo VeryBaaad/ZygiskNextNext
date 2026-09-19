@@ -29,6 +29,7 @@ use crate::procfs;
 use crate::ptrace_ops::{
     read_c_string, read_memory, read_registers, setup_call, write_memory, write_registers,
 };
+use crate::sys;
 use crate::sys::Pid;
 use crate::sys::ptrace;
 use crate::sys::signal;
@@ -196,6 +197,7 @@ impl Daemon {
         tracee.entry = entry;
         tracee.loader = loader_path(self, header.is_64);
         tracee.state = State::Entry;
+        tracee.deadline_ms = 0;
         if !set_entry_breakpoint(pid, tracee, thumb) {
             return false;
         }
@@ -228,8 +230,7 @@ impl Daemon {
             State::Init => {
                 logi!("loader initialized in pid {pid}");
                 self.record_success(pid, &tracee.exe);
-                restore_entry(pid, tracee);
-                write_registers(pid, &tracee.saved);
+                release_tracee(pid, tracee);
                 ptrace::detach(pid, None);
                 Progress::Finished
             }
@@ -253,7 +254,7 @@ impl Daemon {
 
         let mut pc = regs.pc();
         let mut expected = tracee.entry;
-        if tracee.arch == Arch::X86 || tracee.arch == Arch::X86_64 {
+        if trap_reports_next_instruction(tracee.arch) {
             expected = expected.wrapping_add(1);
         } else if tracee.arch == Arch::Arm32 {
             pc &= !1;
@@ -265,10 +266,15 @@ impl Daemon {
             return Progress::Finished;
         }
 
+        let mut regs = regs;
+        if trap_reports_next_instruction(tracee.arch) {
+            regs.set_pc(tracee.entry);
+        }
         tracee.saved = regs;
+
         if !self.start_memfd_call(pid, tracee) {
             loge!("entry trap in pid {pid}: cannot start the loader memfd; giving up");
-            restore_entry(pid, tracee);
+            release_tracee(pid, tracee);
             ptrace::detach(pid, None);
             return Progress::Finished;
         }
@@ -291,7 +297,11 @@ impl Daemon {
         }
         regs.set_sp(stack);
 
-        let arguments = [tracee.arch.memfd_create_number() as usize, stack, 0];
+        let arguments = [
+            tracee.arch.memfd_create_number() as usize,
+            stack,
+            sys::memfd::MFD_CLOEXEC as usize,
+        ];
         if !setup_call(pid, &mut regs, syscall_address, tracee.entry, &arguments) {
             loge!("failed to set up the memfd_create call for pid {pid}");
             return false;
@@ -374,7 +384,7 @@ impl Daemon {
         let regs = match read_registers(pid, tracee.arch) {
             Ok(regs) => regs,
             Err(_) => {
-                restore_entry(pid, tracee);
+                release_tracee(pid, tracee);
                 ptrace::detach(pid, None);
                 return Progress::Finished;
             }
@@ -442,7 +452,7 @@ impl Daemon {
             Ok(regs) => regs,
             Err(_) => {
                 loge!("failed to get regs after dlsym for pid {pid}");
-                restore_entry(pid, tracee);
+                release_tracee(pid, tracee);
                 ptrace::detach(pid, None);
                 return Progress::Finished;
             }
@@ -473,7 +483,7 @@ impl Daemon {
         let regs = match read_registers(pid, tracee.arch) {
             Ok(regs) => regs,
             Err(_) => {
-                restore_entry(pid, tracee);
+                release_tracee(pid, tracee);
                 ptrace::detach(pid, None);
                 return Progress::Finished;
             }
@@ -513,8 +523,7 @@ impl Daemon {
     }
 
     fn undo(&self, pid: Pid, tracee: &Tracee) {
-        restore_entry(pid, tracee);
-        write_registers(pid, &tracee.saved);
+        release_tracee(pid, tracee);
         ptrace::detach(pid, None);
     }
 
@@ -555,6 +564,24 @@ impl Daemon {
 
 const ANDROID_DLEXT_USE_LIBRARY_FD: u64 = 0x10;
 const RTLD_NOW: usize = 2;
+
+fn trap_reports_next_instruction(arch: Arch) -> bool {
+    matches!(arch, Arch::X86 | Arch::X86_64)
+}
+
+fn unskip_entry_instruction(pid: Pid, tracee: &Tracee) {
+    if !trap_reports_next_instruction(tracee.arch) {
+        return;
+    }
+    let Ok(mut regs) = read_registers(pid, tracee.arch) else {
+        return;
+    };
+    if regs.pc() != tracee.entry.wrapping_add(1) {
+        return;
+    }
+    regs.set_pc(tracee.entry);
+    write_registers(pid, &regs);
+}
 
 fn loader_path(daemon: &Daemon, is_64: bool) -> String {
     let path = if is_64 {
@@ -633,5 +660,14 @@ pub(crate) fn restore_entry(pid: Pid, tracee: &Tracee) {
             tracee.entry,
             &tracee.original_instruction[..tracee.breakpoint_size],
         );
+    }
+}
+
+pub(crate) fn release_tracee(pid: Pid, tracee: &Tracee) {
+    restore_entry(pid, tracee);
+    if tracee.state == State::Entry {
+        unskip_entry_instruction(pid, tracee);
+    } else {
+        write_registers(pid, &tracee.saved);
     }
 }

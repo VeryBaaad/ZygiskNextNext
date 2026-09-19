@@ -53,19 +53,19 @@ void* getBaseAddress(ZnSymbolResolver* resolver) {
 void* symbolLookup(ZnSymbolResolver* resolver, const char* name, bool prefix, size_t* size) {
     if (!resolver || !name) return nullptr;
 
-    const znn::SymbolInfo* s = resolver->image->lookup(name, prefix);
-    if (s && size) *size = s->size;
-
     if (!prefix) {
-        uintptr_t a = resolver->image->runtimeLookup(name, size);
-        if (a) {
-            LOGI("symbolLookup %s -> %p (runtime)", name, reinterpret_cast<void*>(a));
-            return reinterpret_cast<void*>(a);
+        const uintptr_t runtime = resolver->image->runtimeLookup(name, size);
+        if (runtime) {
+            LOGI("symbolLookup %s -> %p (runtime)", name, reinterpret_cast<void*>(runtime));
+            return reinterpret_cast<void*>(runtime);
         }
     }
-    if (!s) return nullptr;
-    LOGI("symbolLookup %s -> %p (elf)", name, reinterpret_cast<void*>(s->addr));
-    return reinterpret_cast<void*>(s->addr);
+
+    const znn::SymbolInfo* symbol = resolver->image->lookup(name, prefix);
+    if (!symbol) return nullptr;
+    if (size) *size = symbol->size;
+    LOGI("symbolLookup %s -> %p (elf)", name, reinterpret_cast<void*>(symbol->addr));
+    return reinterpret_cast<void*>(symbol->addr);
 }
 
 void forEachSymbols(ZnSymbolResolver* resolver,

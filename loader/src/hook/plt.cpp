@@ -29,21 +29,20 @@
 namespace znn::hook {
 namespace {
 
-const MapEntry* targetEntry(const std::vector<MapEntry>& maps, uintptr_t base) {
-    const MapEntry* hit = nullptr;
+const MapEntry* findMapping(const std::vector<MapEntry>& maps, uintptr_t base) {
     for (const auto& m : maps) {
         if (m.inode == 0) continue;
-        if ((base >= m.start && base < m.end) || base == m.start - m.offset) {
-            hit = &m;
-            break;
-        }
+        if (base >= m.start && base < m.end) return &m;
+        if (m.start >= m.offset && base == m.start - m.offset) return &m;
     }
-    if (!hit) return nullptr;
-    //file identity via offset-0 map
+    return nullptr;
+}
+
+const MapEntry* firstMappingOfFile(const std::vector<MapEntry>& maps, const MapEntry& hit) {
     for (const auto& m : maps) {
-        if (m.dev == hit->dev && m.inode == hit->inode && m.offset == 0) return &m;
+        if (m.dev == hit.dev && m.inode == hit.inode && m.offset == 0) return &m;
     }
-    return hit;
+    return &hit;
 }
 
 }  //namespace
@@ -54,15 +53,19 @@ bool pltHook(void* base, const char* symbol, void* replacement, void** original)
 
     const uintptr_t b = reinterpret_cast<uintptr_t>(base);
     const auto maps = parseMaps("self");
-    const MapEntry* entry = targetEntry(maps, b);
-    if (!entry) {
+    const MapEntry* hit = findMapping(maps, b);
+    if (!hit) {
         LOGE("pltHook %s: base %p not found in maps", symbol, base);
         return false;
     }
-    LOGI("pltHook base=%p symbol=%s", base, symbol);
-    LOGI("pltHook %s: dev=%llu inode=%llu path=%s", symbol,
+    const MapEntry* entry = firstMappingOfFile(maps, *hit);
+    if (entry->path.empty()) {
+        LOGE("pltHook %s: base %p has no path in maps", symbol, base);
+        return false;
+    }
+    LOGI("pltHook base=%p symbol=%s path=%s dev=%llu inode=%llu", base, symbol, entry->path.c_str(),
          static_cast<unsigned long long>(entry->dev),
-         static_cast<unsigned long long>(entry->inode), entry->path.c_str());
+         static_cast<unsigned long long>(entry->inode));
 
     switch (pltEngine()) {
         case PltEngine::kLsplt:

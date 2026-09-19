@@ -43,6 +43,38 @@ namespace {
 
 constexpr char kModulesDir[] = "/data/adb/modules";
 
+void startCompanionLocally(ModuleHandle* handle, const std::string& lib_path) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
+        LOGW("companion for %s: socketpair failed: %s", lib_path.c_str(), strerror(errno));
+        return;
+    }
+    const pid_t pid = fork();
+    if (pid == 0) {
+        close(sv[0]);
+        companion::run(lib_path.c_str(), sv[1]);
+    }
+    close(sv[1]);
+    if (pid < 0) {
+        close(sv[0]);
+        LOGW("companion for %s: fork failed: %s", lib_path.c_str(), strerror(errno));
+        return;
+    }
+    LOGI("companion for %s forked locally (pid %d)", lib_path.c_str(), pid);
+    handle->companion_fd = sv[0];
+    handle->companion_pid = pid;
+}
+
+void startCompanion(ModuleHandle* handle, const std::string& lib_path) {
+    const int fd = ipc::spawnCompanion(lib_path);
+    if (fd >= 0) {
+        LOGI("companion for %s spawned by injector daemon (fd %d)", lib_path.c_str(), fd);
+        handle->companion_fd = fd;
+        return;
+    }
+    startCompanionLocally(handle, lib_path);
+}
+
 void loadEntry(const Entry& e, int module_fd = -1) {
     std::string lib_path;
     if (module_fd >= 0) {
@@ -75,29 +107,7 @@ void loadEntry(const Entry& e, int module_fd = -1) {
     handle->lib_path = lib_path;
 
     if (e.companion && m->target_api_version >= 3) {
-        int cfd = ipc::spawnCompanion(lib_path);
-        if (cfd >= 0) {
-            LOGI("companion for %s spawned by injector daemon (fd %d)", lib_path.c_str(), cfd);
-            handle->companion_fd = cfd;
-            handle->companion_pid = -1;
-        } else {
-            int sv[2];
-            if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0) {
-                pid_t pid = fork();
-                if (pid == 0) {
-                    close(sv[0]);
-                    companion::run(lib_path.c_str(), sv[1]);
-                    _exit(0);
-                } else if (pid > 0) {
-                    close(sv[1]);
-                    handle->companion_fd = sv[0];
-                    handle->companion_pid = pid;
-                } else {
-                    close(sv[0]);
-                    close(sv[1]);
-                }
-            }
-        }
+        startCompanion(handle, lib_path);
     } else if (e.companion) {
         LOGW("module %s declares companion but targets API %d (< 3), "
              "skipping companion process",

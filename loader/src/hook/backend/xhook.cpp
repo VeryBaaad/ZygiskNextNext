@@ -98,9 +98,23 @@ bool xhookHook(const std::string& caller_path, const char* symbol, void* replace
 
     const std::string key = recordKey(caller_path, symbol);
     std::lock_guard<std::mutex> lk(g_mutex);
-    if (g_records.count(key)) {
-        LOGE("pltHook %s: %s is already hooked, unhook first", symbol, caller_path.c_str());
-        return false;
+    auto it = g_records.find(key);
+    if (it != g_records.end()) {
+        Record& rec = it->second;
+        if (replacement != rec.original) {
+            LOGE("pltHook %s: %s is already hooked, unhook first", symbol, caller_path.c_str());
+            return false;
+        }
+        void* previous = rec.replacement;
+        void* restore = rec.original;
+        rec.replacement = restore;
+        if (!commitLocked()) {
+            rec.replacement = previous;
+            return false;
+        }
+        g_records.erase(it);
+        if (original) *original = previous;
+        return true;
     }
 
     Record rec;
@@ -108,14 +122,15 @@ bool xhookHook(const std::string& caller_path, const char* symbol, void* replace
     rec.symbol = symbol;
     rec.replacement = replacement;
     rec.original = nullptr;
-    g_records[key] = std::move(rec);
+    auto inserted = g_records.emplace(key, std::move(rec)).first;
 
-    if (!commitLocked() || g_records[key].original == nullptr) {
-        g_records.erase(key);
+    if (!commitLocked() || inserted->second.original == nullptr) {
+        g_records.erase(inserted);
+        commitLocked();
         LOGE("pltHook %s: no matching relocation in %s", symbol, caller_path.c_str());
         return false;
     }
-    if (original) *original = g_records[key].original;
+    if (original) *original = inserted->second.original;
     return true;
 }
 

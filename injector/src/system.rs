@@ -22,7 +22,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::sys::fs as raw_fs;
 use crate::sys::prop;
@@ -30,6 +30,7 @@ use crate::sys::prop;
 /// Upper bound on how long a helper may take to answer; past it the probe is
 /// abandoned so a misbehaving helper cannot hold up the daemon.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const HELPER_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default)]
 pub struct RootImpl {
@@ -121,4 +122,35 @@ fn first_line(binary: &str, argument: &str) -> String {
     }
     let _ = child.wait();
     line.trim_end_matches(['\n', '\r']).to_owned()
+}
+
+pub fn run_helper(binary: &str, arguments: &[&str], environment: &[(&str, &str)]) -> bool {
+    let mut command = Command::new(binary);
+    command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {}
+            Err(_) => break,
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _ = child.wait();
+    false
 }
