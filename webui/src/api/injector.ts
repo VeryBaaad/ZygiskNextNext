@@ -12,8 +12,6 @@ export async function getInjectorStatus(): Promise<InjectorStatus> {
     pid?: number;
     mode?: string;
   }>(`'${apiBinary()}' --ctl status`);
-  // Defensive normalization: tolerate string "true"/"false" as well as real
-  // booleans, so a malformed snapshot can never crash the status card.
   return {
     pid: typeof raw.pid === 'number' ? raw.pid : 0,
     mode: typeof raw.mode === 'string' ? raw.mode : undefined,

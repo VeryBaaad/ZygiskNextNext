@@ -1,10 +1,10 @@
-import '@material/web/divider/divider.js';
-import '@material/web/elevation/elevation.js';
-import '@material/web/icon/icon.js';
-import '@material/web/menu/menu.js';
-import '@material/web/menu/menu-item.js';
+import '@m3e/web/button';
+import '@m3e/web/card';
+import '@m3e/web/icon';
+import '@m3e/web/menu';
+import '@m3e/web/snackbar';
 
-import { toast } from 'kernelsu';
+import { M3eSnackbar } from '@m3e/web/snackbar';
 
 import { setHookConfig, type HookConfig, type HookEngineEntry, type HookKind } from '../api/config';
 import { onLocaleChange, t } from '../i18n';
@@ -60,61 +60,63 @@ export class ConfigCard extends HTMLElement {
   }
 
   private rowHtml(kind: HookKind, entry: HookEngineEntry): string {
-    const menuId = `config-menu-${kind}`;
-    const btnId = `config-btn-${kind}`;
+    const menuId = `znn-config-menu-${kind}`;
     const items = entry.options
       .map(
-        (id) => `
-          <md-menu-item data-kind="${kind}" data-value="${escapeHtml(id)}">
-            ${id === entry.value ? '<md-icon slot="start">check</md-icon>' : ''}
-            <div slot="headline">${escapeHtml(this.optionLabel(kind, id))}</div>
-          </md-menu-item>`,
+        (value) =>
+          `<m3e-menu-item-radio data-kind="${kind}" data-value="${escapeHtml(value)}" ${
+            value === entry.value ? 'checked' : ''
+          }>${escapeHtml(this.optionLabel(kind, value))}</m3e-menu-item-radio>`,
       )
       .join('');
     return `
       <div class="config-row">
-        <span class="config-label">${t(ROW_LABEL_KEYS[kind])}</span>
-        <span class="config-control">
-          <button type="button" class="config-select" id="${btnId}" data-kind="${kind}">
-            <span class="config-select-label">${escapeHtml(this.optionLabel(kind, entry.value))}</span>
-            <md-icon class="config-select-arrow">arrow_drop_down</md-icon>
-          </button>
-          <md-menu id="${menuId}" anchor="${btnId}" positioning="fixed">
-            ${items}
-          </md-menu>
-        </span>
+        <span class="config-label">${escapeHtml(t(ROW_LABEL_KEYS[kind]))}</span>
+        <m3e-button class="config-value" size="extra-small" variant="tonal" data-kind="${kind}">
+          <span>${escapeHtml(this.optionLabel(kind, entry.value))}</span>
+          <m3e-icon slot="trailing-icon" name="arrow_drop_down"></m3e-icon>
+        </m3e-button>
+        <m3e-menu id="${menuId}" position-x="before">${items}</m3e-menu>
       </div>`;
   }
 
   private render(): void {
     this.innerHTML = `
-      <div class="md-card config-card">
-        <md-elevation></md-elevation>
-        <div class="card-body">
-          <div class="card-title">${t('config.title')}</div>
-          ${ROWS.map((r) => `<md-divider></md-divider>${this.rowHtml(r.kind, this.data[r.field])}`).join('')}
-          <md-divider></md-divider>
-          <div class="config-hint">${t('config.reloadHint')}</div>
+      <m3e-card class="config-card" variant="filled">
+        <div slot="content" class="card-body">
+          ${ROWS.map((r) => this.rowHtml(r.kind, this.data[r.field])).join('')}
+          <p class="config-hint">${escapeHtml(t('config.reloadHint'))}</p>
         </div>
-      </div>`;
+      </m3e-card>`;
 
-    this.querySelectorAll<HTMLElement>('.config-select').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const kind = btn.getAttribute('data-kind') as HookKind | null;
-        if (!kind) return;
-        const menu = this.querySelector<{ open: boolean } & HTMLElement>(`#config-menu-${kind}`);
-        if (menu) menu.open = !menu.open;
-      });
-    });
+    this.querySelectorAll<HTMLElement & { disabled?: boolean }>('m3e-button[data-kind]').forEach(
+      (button) => {
+        button.addEventListener('click', () => {
+          const kind = button.getAttribute('data-kind');
+          if (!kind) return;
+          const menu = this.querySelector<HTMLElement & { toggle(t: HTMLElement): Promise<void> }>(
+            `#znn-config-menu-${kind}`,
+          );
+          if (!menu) return;
+          const rect = button.getBoundingClientRect();
+          const viewport = document.documentElement.clientWidth;
+          menu.style.setProperty(
+            '--znn-menu-inline-end',
+            `${Math.max(8, Math.round(viewport - rect.right))}px`,
+          );
+          void menu.toggle(button);
+        });
+      },
+    );
 
-    this.querySelectorAll<HTMLElement>('md-menu-item[data-kind]').forEach((item) => {
+    this.querySelectorAll<HTMLElement>('m3e-menu-item-radio[data-kind]').forEach((item) => {
       item.addEventListener('click', () => {
         const kind = item.getAttribute('data-kind') as HookKind | null;
         const value = item.getAttribute('data-value');
         if (!kind || !value || this.busy) return;
         const row = ROWS.find((r) => r.kind === kind);
         if (!row || value === this.data[row.field].value) return;
-        this.apply(kind, value);
+        void this.apply(kind, value);
       });
     });
   }
@@ -126,13 +128,13 @@ export class ConfigCard extends HTMLElement {
       this.data.inlineHook = next.inlineHook;
       this.data.pltHook = next.pltHook;
       this.data.mode = next.mode;
-      this.render();
-      toast(t('config.saved'));
+      M3eSnackbar.open(t('config.saved'));
     } catch (e) {
       console.warn('[znn] config-set:', e);
-      toast(t('config.saveFailed'));
+      M3eSnackbar.open(t('config.saveFailed'));
     } finally {
       this.busy = false;
+      this.render();
     }
   }
 }
