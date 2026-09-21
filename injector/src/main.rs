@@ -29,6 +29,7 @@ mod log;
 mod maps;
 mod mode;
 mod paths;
+mod plan;
 mod procfs;
 mod ptrace_ops;
 mod state;

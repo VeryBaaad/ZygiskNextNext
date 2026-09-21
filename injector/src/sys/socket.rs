@@ -18,30 +18,11 @@
  */
 
 use std::io;
-use std::io::{IoSlice, IoSliceMut};
+use std::io::IoSliceMut;
 use std::os::fd::RawFd;
 
 use nix::cmsg_space;
-use nix::sys::socket::{self, ControlMessage, ControlMessageOwned, MsgFlags, UnixAddr};
-
-pub fn send_with_fd(socket: RawFd, payload: &[u8], descriptor: Option<RawFd>) -> io::Result<()> {
-    let payload = [IoSlice::new(payload)];
-    let descriptors = descriptor.as_slice();
-    let control = if descriptor.is_some() {
-        vec![ControlMessage::ScmRights(descriptors)]
-    } else {
-        Vec::new()
-    };
-    socket::sendmsg(
-        socket,
-        &payload,
-        &control,
-        MsgFlags::empty(),
-        None::<&UnixAddr>,
-    )
-    .map(|_| ())
-    .map_err(io::Error::from)
-}
+use nix::sys::socket::{self, ControlMessageOwned, MsgFlags, UnixAddr};
 
 pub fn recv_with_fd(socket: RawFd, payload: &mut [u8]) -> io::Result<(usize, Option<RawFd>)> {
     let mut payload = [IoSliceMut::new(payload)];

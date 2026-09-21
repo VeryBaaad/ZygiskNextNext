@@ -32,10 +32,8 @@ add_library(loader SHARED
     hyos/state.cpp
     hyos/hooks.cpp
     hyos/runtime.cpp
-    ipc/socket.cpp
-    ipc/client.cpp
-    companion/process.cpp
-    module/entry.cpp
+    ipc/channel.cpp
+    module/plan.cpp
     module/loader.cpp
 )
 target_include_directories(loader PRIVATE

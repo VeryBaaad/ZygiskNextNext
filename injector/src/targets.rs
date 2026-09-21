@@ -49,6 +49,7 @@ pub struct ModuleInfo {
     pub name: String,
     pub version: String,
     pub targets: Vec<Target>,
+    pub declarations: Vec<Declaration>,
     pub processes: Vec<(Pid, String)>,
     pub failed: Vec<(String, String)>,
 }
@@ -138,9 +139,11 @@ pub fn collect(previous: &BTreeMap<String, ModuleInfo>) -> BTreeMap<String, Modu
             module.name = module.id.clone();
         }
         module.version = read_prop(&module_dir, "version");
-        module.targets = declarations
-            .into_iter()
-            .map(|declaration| declaration.target)
+        module.declarations = declarations;
+        module.targets = module
+            .declarations
+            .iter()
+            .map(|declaration| declaration.target.clone())
             .collect();
         if module.targets.is_empty() {
             continue;
@@ -175,6 +178,50 @@ pub fn matches(targets: &[Target], exe: &str) -> bool {
 
 pub fn module_matches(module: &ModuleInfo, exe: &str) -> bool {
     !exe.is_empty() && matches(&module.targets, exe)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleLibrary {
+    pub path: String,
+    pub companion: bool,
+}
+
+pub fn resolve_library(module_dir: &Path, library: &str) -> Option<String> {
+    let candidate = if library.starts_with('/') {
+        PathBuf::from(library)
+    } else {
+        module_dir.join(library)
+    };
+    let library = fs::canonicalize(candidate).ok()?;
+    let module = fs::canonicalize(module_dir).ok()?;
+    if library == module || !library.starts_with(&module) {
+        return None;
+    }
+    Some(library.to_string_lossy().into_owned())
+}
+
+pub fn libraries_for(modules: &BTreeMap<String, ModuleInfo>, exe: &str) -> Vec<ModuleLibrary> {
+    let mut libraries = Vec::new();
+    let mut seen = BTreeSet::new();
+    for module in modules.values() {
+        let module_dir = PathBuf::from(paths::MODULES_DIR).join(&module.id);
+        for declaration in &module.declarations {
+            if !declaration.target.matches(exe) {
+                continue;
+            }
+            let Some(path) = resolve_library(&module_dir, &declaration.library) else {
+                continue;
+            };
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            libraries.push(ModuleLibrary {
+                path,
+                companion: declaration.companion,
+            });
+        }
+    }
+    libraries
 }
 
 impl Daemon {

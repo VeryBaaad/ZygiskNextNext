@@ -21,10 +21,13 @@ use std::fs;
 use std::path::Path;
 
 use crate::arch::{Arch, Regs};
+use crate::companion;
+use crate::config;
 use crate::daemon::Daemon;
 use crate::elf::{self, ElfHeader};
 use crate::log::{loge, logi, logw};
 use crate::maps;
+use crate::plan::{self, Plan, PlanModule};
 use crate::procfs;
 use crate::ptrace_ops::{
     read_c_string, read_memory, read_registers, setup_call, write_memory, write_registers,
@@ -38,16 +41,21 @@ use crate::targets;
 
 const INSTRUCTION_CAPACITY: usize = 8;
 const STACK_MASK: usize = !0xF;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Traced,
     Entry,
-    Memfd,
+    File,
     Dlopen,
     Dlsym,
     Init,
     Dlerror,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilePurpose {
+    Loader,
+    Module,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +70,14 @@ pub struct Tracee {
     content: Vec<u8>,
     pub exe: String,
     pub deadline_ms: u64,
+    init_function: usize,
+    modules: Vec<PlanModule>,
+    module_index: usize,
+    nonce: u32,
+    file_purpose: FilePurpose,
+    file_fd: i32,
+    file_name: Vec<u8>,
+    module_content: Vec<u8>,
 }
 
 impl Tracee {
@@ -77,6 +93,14 @@ impl Tracee {
             content: Vec::new(),
             exe: String::new(),
             deadline_ms: 0,
+            init_function: 0,
+            modules: Vec::new(),
+            module_index: 0,
+            nonce: 0,
+            file_purpose: FilePurpose::Loader,
+            file_fd: -1,
+            file_name: Vec::new(),
+            module_content: Vec::new(),
         }
     }
 }
@@ -223,7 +247,7 @@ impl Daemon {
     fn step(&mut self, pid: Pid, tracee: &mut Tracee) -> Progress {
         match tracee.state {
             State::Entry => self.trap_at_entry(pid, tracee),
-            State::Memfd => self.trap_after_memfd(pid, tracee),
+            State::File => self.trap_file(pid, tracee),
             State::Dlopen => self.trap_after_dlopen(pid, tracee),
             State::Dlsym => self.trap_after_dlsym(pid, tracee),
             State::Dlerror => self.trap_after_dlerror(pid, tracee),
@@ -272,8 +296,8 @@ impl Daemon {
         }
         tracee.saved = regs;
 
-        if !self.start_memfd_call(pid, tracee) {
-            loge!("entry trap in pid {pid}: cannot start the loader memfd; giving up");
+        if !self.start_file(pid, tracee, FilePurpose::Loader, regs) {
+            loge!("entry trap in pid {pid}: cannot start the loader image; giving up");
             release_tracee(pid, tracee);
             ptrace::detach(pid, None);
             return Progress::Finished;
@@ -282,69 +306,127 @@ impl Daemon {
         Progress::Tracing
     }
 
-    fn start_memfd_call(&self, pid: Pid, tracee: &mut Tracee) -> bool {
+    fn start_file(
+        &mut self,
+        pid: Pid,
+        tracee: &mut Tracee,
+        purpose: FilePurpose,
+        regs: Regs,
+    ) -> bool {
+        if purpose == FilePurpose::Loader && tracee.content.is_empty() {
+            match procfs::read_file(Path::new(&tracee.loader)) {
+                Some(content) => tracee.content = content,
+                None => {
+                    loge!("cannot read the loader (injector side)");
+                    return false;
+                }
+            }
+        }
+
+        tracee.file_purpose = purpose;
+        tracee.file_fd = -1;
+        let name = match purpose {
+            FilePurpose::Loader => "znn-loader".to_owned(),
+            FilePurpose::Module => format!("znn-module-{}", tracee.module_index),
+        };
+        tracee.file_name = name.into_bytes();
+        tracee.file_name.push(0);
+
+        self.start_memfd(pid, tracee, regs)
+    }
+
+    fn start_memfd(&self, pid: Pid, tracee: &mut Tracee, mut regs: Regs) -> bool {
         let Some(syscall_address) = resolve_syscall(pid) else {
             loge!("failed to resolve syscall for pid {pid}");
             return false;
         };
-
-        let mut regs = tracee.saved;
-        let name = b"loader\0";
-        let stack = regs.sp().wrapping_sub(name.len() + 0x10) & STACK_MASK;
-        if !write_memory(pid, stack, name) {
+        let Some(name_address) = push_bytes(pid, &mut regs, &tracee.file_name) else {
             loge!("failed to write the memfd name below the stack for pid {pid}");
             return false;
-        }
-        regs.set_sp(stack);
-
+        };
         let arguments = [
             tracee.arch.memfd_create_number() as usize,
-            stack,
+            name_address,
             sys::memfd::MFD_CLOEXEC as usize,
         ];
-        if !setup_call(pid, &mut regs, syscall_address, tracee.entry, &arguments) {
-            loge!("failed to set up the memfd_create call for pid {pid}");
-            return false;
-        }
-        if !write_registers(pid, &regs) {
-            loge!("failed to write the registers for the memfd_create call in pid {pid}");
-            return false;
-        }
-        tracee.state = State::Memfd;
-        true
+        self.arm_call(pid, tracee, &mut regs, syscall_address, &arguments)
     }
 
-    fn trap_after_memfd(&mut self, pid: Pid, tracee: &mut Tracee) -> Progress {
-        let regs = match read_registers(pid, tracee.arch) {
-            Ok(regs) => regs,
-            Err(_) => {
-                self.abort(pid, tracee, "failed to get regs after memfd_create");
-                return Progress::Finished;
-            }
+    fn arm_call(
+        &self,
+        pid: Pid,
+        tracee: &mut Tracee,
+        regs: &mut Regs,
+        function: usize,
+        arguments: &[usize],
+    ) -> bool {
+        if !setup_call(pid, regs, function, tracee.entry, arguments) {
+            return false;
+        }
+        tracee.state = State::File;
+        write_registers(pid, regs)
+    }
+
+    fn trap_file(&mut self, pid: Pid, tracee: &mut Tracee) -> Progress {
+        let Ok(regs) = read_registers(pid, tracee.arch) else {
+            self.abort(pid, tracee, "failed to get regs after memfd_create");
+            return Progress::Finished;
         };
 
-        let memfd = regs.return_value() as i32;
-        if memfd < 0 {
-            loge!("memfd_create failed for pid {pid} ({memfd})");
-            self.give_up(pid, tracee, "memfd_create failed");
+        let fd = regs.return_value() as i32;
+        if fd < 0 {
+            if fd == -libc::ENOSYS {
+                loge!(
+                    "pid {pid}: this kernel ({}) has no memfd_create, which needs Linux 3.17; \
+                     Zygisk Next Next cannot inject here",
+                    self.system.kernel
+                );
+                self.give_up(
+                    pid,
+                    tracee,
+                    "kernel without memfd_create (needs Linux 3.17)",
+                );
+            } else {
+                loge!("memfd_create failed for pid {pid} ({fd})");
+                self.give_up(pid, tracee, "memfd_create failed");
+            }
             return Progress::Finished;
         }
 
-        if tracee.content.is_empty() {
-            match procfs::read_file(Path::new(&tracee.loader)) {
-                Some(content) => tracee.content = content,
-                None => {
-                    self.abort(pid, tracee, "cannot read the loader (injector side)");
+        tracee.file_fd = fd;
+        self.file_ready(pid, tracee, regs)
+    }
+
+    fn file_ready(&mut self, pid: Pid, tracee: &mut Tracee, regs: Regs) -> Progress {
+        let fd = tracee.file_fd;
+
+        match tracee.file_purpose {
+            FilePurpose::Loader => {
+                if !procfs::write_to_target_fd(pid, fd, &tracee.content) {
+                    self.abort(pid, tracee, "cannot fill the loader image");
                     return Progress::Finished;
                 }
+                self.start_dlopen(pid, tracee, regs, fd)
+            }
+            FilePurpose::Module => {
+                if !procfs::write_to_target_fd(pid, fd, &tracee.module_content) {
+                    self.abort(pid, tracee, "cannot fill a module library");
+                    return Progress::Finished;
+                }
+                let module = tracee.module_index;
+                logi!(
+                    "pid {pid}: {} handed over as fd {fd} ({} bytes)",
+                    tracee.modules[module].path,
+                    tracee.module_content.len()
+                );
+                tracee.modules[module].fd = fd;
+                tracee.module_index += 1;
+                self.pump_modules(pid, tracee)
             }
         }
-        if !procfs::write_to_target_fd(pid, memfd, &tracee.content) {
-            loge!("failed to write to memfd {memfd} of pid {pid}");
-            self.give_up(pid, tracee, "cannot write loader to memfd");
-            return Progress::Finished;
-        }
+    }
 
+    fn start_dlopen(&mut self, pid: Pid, tracee: &mut Tracee, mut regs: Regs, fd: i32) -> Progress {
         let Some(dlopen_address) = resolve_dlopen_ext(pid) else {
             self.abort(pid, tracee, "cannot resolve android_dlopen_ext");
             return Progress::Finished;
@@ -353,11 +435,10 @@ impl Daemon {
         let mut extinfo = [0u8; 48];
         extinfo[..8].copy_from_slice(&ANDROID_DLEXT_USE_LIBRARY_FD.to_ne_bytes());
         let library_fd_offset = if tracee.arch.is_64() { 28 } else { 20 };
-        extinfo[library_fd_offset..library_fd_offset + 4].copy_from_slice(&memfd.to_ne_bytes());
+        extinfo[library_fd_offset..library_fd_offset + 4].copy_from_slice(&fd.to_ne_bytes());
 
         let name = b"libloader.so\0";
         let name_size = (name.len() + 7) & !7;
-        let mut regs = regs;
         let stack = regs.sp().wrapping_sub(name_size + extinfo.len() + 0x10) & STACK_MASK;
         let name_address = stack;
         let extinfo_address = stack + name_size;
@@ -464,15 +545,87 @@ impl Daemon {
             self.give_up(pid, tracee, "dlsym znn_loader_init failed");
             return Progress::Finished;
         }
+        tracee.init_function = init_function;
 
-        let mut regs = regs;
-        if !setup_call(pid, &mut regs, init_function, tracee.entry, &[])
-            || !write_registers(pid, &regs)
-        {
-            loge!("failed to setup znn_loader_init for pid {pid}");
-            self.undo(pid, tracee);
+        tracee.modules = targets::libraries_for(&self.modules, &tracee.exe)
+            .into_iter()
+            .enumerate()
+            .map(|(index, library)| PlanModule::new(index as u32, library.path, library.companion))
+            .collect();
+        tracee.module_index = 0;
+        tracee.nonce = plan::fresh_nonce();
+        logi!(
+            "pid {pid}: handing {} module librar(y/ies) over to the loader",
+            tracee.modules.len()
+        );
+
+        self.pump_modules(pid, tracee)
+    }
+
+    fn pump_modules(&mut self, pid: Pid, tracee: &mut Tracee) -> Progress {
+        if tracee.module_index >= tracee.modules.len() {
+            return self.finish_injection(pid, tracee);
+        }
+
+        let path = tracee.modules[tracee.module_index].path.clone();
+        let Some(content) = procfs::read_file(Path::new(&path)) else {
+            self.abort(pid, tracee, "cannot read a module library");
+            return Progress::Finished;
+        };
+        tracee.module_content = content;
+
+        let Ok(regs) = read_registers(pid, tracee.arch) else {
+            self.abort(pid, tracee, "cannot read registers to start a module file");
+            return Progress::Finished;
+        };
+        if !self.start_file(pid, tracee, FilePurpose::Module, regs) {
+            self.abort(pid, tracee, "cannot start a module file in the target");
             return Progress::Finished;
         }
+        ptrace::cont(pid, None);
+        Progress::Tracing
+    }
+
+    fn finish_injection(&mut self, pid: Pid, tracee: &mut Tracee) -> Progress {
+        let config = config::effective();
+        let plan = Plan {
+            modules: tracee.modules.clone(),
+            inline_engine: config.inline_hook,
+            plt_engine: config.plt_hook,
+            nonce: tracee.nonce,
+        };
+        let Some(bytes) = plan.encode() else {
+            self.abort(pid, tracee, "the boot plan does not fit");
+            return Progress::Finished;
+        };
+
+        let Ok(mut regs) = read_registers(pid, tracee.arch) else {
+            self.abort(pid, tracee, "cannot read registers to write the boot plan");
+            return Progress::Finished;
+        };
+        let stack = regs.sp().wrapping_sub(bytes.len() + 0x10) & STACK_MASK;
+        if !write_memory(pid, stack, &bytes) {
+            self.abort(pid, tracee, "cannot write the boot plan into the target");
+            return Progress::Finished;
+        }
+        regs.set_sp(stack);
+
+        for module in plan.companions() {
+            companion::spawn(&module.path, plan.nonce, module.index);
+        }
+
+        if !setup_call(pid, &mut regs, tracee.init_function, tracee.entry, &[stack])
+            || !write_registers(pid, &regs)
+        {
+            self.abort(pid, tracee, "cannot enter znn_loader_init");
+            return Progress::Finished;
+        }
+        logi!(
+            "pid {pid}: boot plan ({} bytes, {} module(s), nonce {:#010x}) handed to the loader",
+            bytes.len(),
+            tracee.modules.len(),
+            plan.nonce
+        );
 
         tracee.state = State::Init;
         ptrace::cont(pid, None);
@@ -500,7 +653,7 @@ impl Daemon {
 
         if error.contains("Permission denied") {
             loge!(
-                "hint for pid {pid}: dlopen needs the `execute` permission on the memfd's SELinux label (\"tmpfs\", \"unlabeled\", or the target's own <domain>_tmpfs, e.g. artd_tmpfs). Make sure the module sepolicy.rule is applied; Zygisk Next Next ships `allow * * file execute` to cover every label."
+                "hint for pid {pid}: the loader image is a memfd created inside the target, so the target's domain needs `execute` on its own tmpfs label. Zygisk Next Next ships the two rules that cover every label; make sure module/src/sepolicy.rule is applied."
             );
         } else if error.contains("not accessible") {
             loge!(
@@ -564,6 +717,15 @@ impl Daemon {
 
 const ANDROID_DLEXT_USE_LIBRARY_FD: u64 = 0x10;
 const RTLD_NOW: usize = 2;
+
+fn push_bytes(pid: Pid, regs: &mut Regs, bytes: &[u8]) -> Option<usize> {
+    let address = regs.sp().wrapping_sub(bytes.len() + 0x10) & STACK_MASK;
+    if !write_memory(pid, address, bytes) {
+        return None;
+    }
+    regs.set_sp(address);
+    Some(address)
+}
 
 fn trap_reports_next_instruction(arch: Arch) -> bool {
     matches!(arch, Arch::X86 | Arch::X86_64)

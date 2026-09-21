@@ -339,7 +339,10 @@ impl Daemon {
             if entry.offset == 0 && procfs::map_path_equals_exe(&entry.path, exe) {
                 base = entry.start;
             }
-            if entry.path.contains("libloader.so") || entry.path.contains("memfd:loader") {
+            if entry.path.contains("libloader.so")
+                || entry.path.contains("memfd:loader")
+                || entry.path.contains("memfd:znn-loader")
+            {
                 has_loader = true;
             }
         }

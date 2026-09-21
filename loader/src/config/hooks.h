@@ -19,8 +19,10 @@
 
 #pragma once
 
+#include <string>
+
 namespace znn::config {
 
-void resolveHookEngines();
+void resolveHookEngines(const std::string& inline_name, const std::string& plt_name);
 
 }  //namespace znn::config

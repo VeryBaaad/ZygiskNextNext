@@ -19,17 +19,17 @@
 
 #pragma once
 
-#include <sys/types.h>
+#include <stdint.h>
 
 #include <string>
 
 namespace znn {
 
-//opaque self_handle for modules
 struct ModuleHandle {
     std::string lib_path;
-    int companion_fd = -1;
-    pid_t companion_pid = -1;
+    uint32_t companion_nonce = 0;
+    int companion_listen_fd = -1;
+    int companion_channel = -1;
 };
 
 }  //namespace znn
