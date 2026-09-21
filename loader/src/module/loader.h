@@ -19,8 +19,10 @@
 
 #pragma once
 
+#include "module/plan.h"
+
 namespace znn::module {
 
-void loadAll();
+void loadAll(const Plan& plan);
 
 }  //namespace znn::module

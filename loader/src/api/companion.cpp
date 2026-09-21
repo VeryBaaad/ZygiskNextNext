@@ -19,31 +19,35 @@
 
 #include "api/api.h"
 
-#include "ipc/protocol.h"
-#include "ipc/socket.h"
+#include "ipc/channel.h"
 #include "log.h"
 #include "module/handle.h"
 
-#include <sys/socket.h>
 #include <unistd.h>
 
 namespace znn::api {
 
 int connectCompanion(void* handle) {
     auto* h = static_cast<ModuleHandle*>(handle);
-    if (!h || h->companion_fd < 0) return -1;
+    if (!h || h->companion_listen_fd < 0) return -1;
 
-    int sv[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) return -1;
+    if (h->companion_channel < 0) {
+        h->companion_channel =
+            ipc::acceptChannel(h->companion_listen_fd, h->companion_nonce,
+                               ipc::kChannelAcceptTimeoutMs);
+    }
+    if (h->companion_channel < 0) return -1;
 
-    const char cmd = ipc::kCmdConnectPeer;
-    if (!ipc::sendFd(h->companion_fd, &cmd, sizeof(cmd), sv[1])) {
-        close(sv[0]);
-        close(sv[1]);
+    int module_fd = -1;
+    int helper_fd = -1;
+    if (!ipc::makePeerPair(&module_fd, &helper_fd)) return -1;
+    if (!ipc::sendFrame(h->companion_channel, ipc::kChannelConnect, helper_fd)) {
+        close(module_fd);
+        close(helper_fd);
         return -1;
     }
-    close(sv[1]);
-    return sv[0];
+    close(helper_fd);
+    return module_fd;
 }
 
 int connectCompanionUnavailable(void*) {

@@ -21,8 +21,6 @@
 
 namespace znn {
 
-void* dlopenMemfd(const char* path, int flags);
-
 void* dlopenFd(int fd, const char* name, int flags);
 
 }  //namespace znn

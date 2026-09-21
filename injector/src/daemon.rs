@@ -20,13 +20,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crate::companion;
 use crate::config;
 use crate::log::{loge, logi, logw};
 use crate::mode::Candidate;
@@ -77,7 +75,6 @@ pub struct Daemon {
     pub candidates: HashMap<Pid, Candidate>,
     pub yielded: HashSet<Pid>,
     pub ignored_rescans: u32,
-    pub listener: Option<UnixListener>,
     pub last_rescan_ms: Option<u64>,
     pub last_zygisk_check_ms: u64,
     pub last_state_write_ms: u64,
@@ -105,7 +102,6 @@ impl Daemon {
             candidates: HashMap::new(),
             yielded: HashSet::new(),
             ignored_rescans: 0,
-            listener: None,
             last_rescan_ms: None,
             last_zygisk_check_ms: 0,
             last_state_write_ms: 0,
@@ -120,7 +116,6 @@ impl Daemon {
         daemon.collect_targets();
         logi!("collected {} zn modules", daemon.targets.len());
 
-        daemon.listener = companion::create_listener();
         daemon.select_mode();
         daemon
     }
@@ -143,8 +138,6 @@ impl Daemon {
                 self.state.dirty = true;
                 logi!("rescanned znn targets ({})", self.targets.len());
             }
-
-            self.accept_companion_requests();
 
             match self.mode {
                 Tracking::Proc => self.poll_processes(),
@@ -219,6 +212,15 @@ impl Daemon {
         }
         if unreadable == 2 {
             self.state.status_reason = "cannot read the loader".to_owned();
+        }
+
+        if let Ok(cap) = fs::read_to_string("/sys/fs/selinux/policy_capabilities/memfd_class")
+            && cap.trim() == "1"
+        {
+            logw!(
+                "this policy enables memfd_class: memfds are labelled with the creating domain, so \
+                 the module policy may need a `memfd_file` rule for non-app targets"
+            );
         }
     }
 

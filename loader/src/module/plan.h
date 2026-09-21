@@ -19,19 +19,27 @@
 
 #pragma once
 
-#include <cstddef>
+#include <stdint.h>
+
 #include <string>
+#include <vector>
 
-namespace znn::ipc {
+namespace znn::module {
 
-int connectDaemon();
+struct PlanModule {
+    int fd = -1;
+    bool companion = false;
+    uint32_t index = 0;
+    std::string path;
+};
 
-bool writeAll(int fd, const void* buf, size_t len);
+struct Plan {
+    std::vector<PlanModule> modules;
+    std::string inline_engine;
+    std::string plt_engine;
+    uint32_t nonce = 0;
+};
 
-bool recvFull(int fd, void* buf, size_t len, int* out_fd);
+bool parsePlan(const void* raw, Plan& out);
 
-bool recvString(int fd, std::string& out, size_t max_len);
-
-bool sendFd(int fd, const void* buf, size_t len, int payload_fd);
-
-}  //namespace znn::ipc
+}  //namespace znn::module

@@ -19,22 +19,22 @@
 
 #pragma once
 
-#include <string>
-#include <vector>
+#include <stddef.h>
+#include <stdint.h>
 
 namespace znn::ipc {
 
-struct DaemonModule {
-    std::string lib_path;
-    bool companion = false;
-    int fd = -1;
-};
+constexpr uint8_t kChannelConnect = 1;
 
-int spawnCompanion(const std::string& lib_path);
+constexpr int kChannelBacklog = 4;
+constexpr int kChannelAcceptTimeoutMs = 2000;
 
-bool listModules(const std::string& process_name, const std::string& process_path,
-                 std::vector<DaemonModule>& out);
+int bindChannel(uint32_t nonce, uint32_t index);
+int acceptChannel(int listen_fd, uint32_t nonce, int timeout_ms);
 
-bool hookConfig(std::string& inline_out, std::string& plt_out);
+bool makePeerPair(int* out_module_fd, int* out_helper_fd);
+
+bool sendFrame(int fd, uint8_t command, int payload_fd);
+bool recvFrame(int fd, uint8_t* command, int* out_fd);
 
 }  //namespace znn::ipc

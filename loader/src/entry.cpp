@@ -21,16 +21,23 @@
 #include "hyos/runtime.h"
 #include "log.h"
 #include "module/loader.h"
+#include "module/plan.h"
 #include "process/self.h"
 
 #include <unistd.h>
 
-extern "C" __attribute__((visibility("default"))) void znn_loader_init() {
+extern "C" __attribute__((visibility("default"))) void znn_loader_init(const void* raw_plan) {
+    znn::module::Plan plan;
+    if (!znn::module::parsePlan(raw_plan, plan)) {
+        LOGE("loader: no valid boot plan, doing nothing in this process");
+        return;
+    }
+
     LOGI("loader initialized in pid %d (%s)", getpid(), znn::process::exePath().c_str());
 
-    znn::config::resolveHookEngines();
+    znn::config::resolveHookEngines(plan.inline_engine, plan.plt_engine);
 
     if (znn::process::exeName() == "hyos_spawner") znn::hyos::setActive(true);
 
-    znn::module::loadAll();
+    znn::module::loadAll(plan);
 }

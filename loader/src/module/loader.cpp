@@ -20,150 +20,64 @@
 #include "module/loader.h"
 
 #include "api/api.h"
-#include "companion/process.h"
-#include "ipc/client.h"
+#include "ipc/channel.h"
 #include "log.h"
-#include "module/entry.h"
 #include "module/handle.h"
-#include "process/self.h"
 #include "utils/dlext.h"
 
-#include <dirent.h>
 #include <dlfcn.h>
-#include <errno.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <string>
-#include <vector>
 
 namespace znn::module {
 namespace {
 
-constexpr char kModulesDir[] = "/data/adb/modules";
-
-void startCompanionLocally(ModuleHandle* handle, const std::string& lib_path) {
-    int sv[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
-        LOGW("companion for %s: socketpair failed: %s", lib_path.c_str(), strerror(errno));
-        return;
+int openCompanionChannel(const Plan& plan, const PlanModule& module) {
+    const int fd = ipc::bindChannel(plan.nonce, module.index);
+    if (fd < 0) {
+        LOGE("module %s: cannot open its companion channel", module.path.c_str());
     }
-    const pid_t pid = fork();
-    if (pid == 0) {
-        close(sv[0]);
-        companion::run(lib_path.c_str(), sv[1]);
-    }
-    close(sv[1]);
-    if (pid < 0) {
-        close(sv[0]);
-        LOGW("companion for %s: fork failed: %s", lib_path.c_str(), strerror(errno));
-        return;
-    }
-    LOGI("companion for %s forked locally (pid %d)", lib_path.c_str(), pid);
-    handle->companion_fd = sv[0];
-    handle->companion_pid = pid;
+    return fd;
 }
 
-void startCompanion(ModuleHandle* handle, const std::string& lib_path) {
-    const int fd = ipc::spawnCompanion(lib_path);
-    if (fd >= 0) {
-        LOGI("companion for %s spawned by injector daemon (fd %d)", lib_path.c_str(), fd);
-        handle->companion_fd = fd;
-        return;
-    }
-    startCompanionLocally(handle, lib_path);
-}
-
-void loadEntry(const Entry& e, int module_fd = -1) {
-    std::string lib_path;
-    if (module_fd >= 0) {
-        lib_path = e.lib;
-    } else if (!resolveLibPath(e, lib_path)) {
-        LOGE("module lib path %s is not inside module dir, skipping", e.lib.c_str());
-        return;
-    }
-
-    void* lib = module_fd >= 0 ? dlopenFd(module_fd, lib_path.c_str(), RTLD_NOW)
-                               : dlopenMemfd(lib_path.c_str(), RTLD_NOW);
+void loadEntry(const Plan& plan, const PlanModule& entry) {
+    void* lib = dlopenFd(entry.fd, entry.path.c_str(), RTLD_NOW);
     if (!lib) {
-        LOGE("dlopen %s failed: %s", lib_path.c_str(), dlerror());
+        LOGE("dlopen %s (fd %d) failed: %s", entry.path.c_str(), entry.fd, dlerror());
         return;
     }
 
     auto* m = reinterpret_cast<ZygiskNextModule*>(dlsym(lib, "zn_module"));
     if (!m || !m->onModuleLoaded) {
-        LOGE("%s does not export zn_module", lib_path.c_str());
+        LOGE("%s does not export zn_module", entry.path.c_str());
         return;
     }
-
     if (m->target_api_version > ZYGISK_NEXT_API_VERSION) {
-        LOGW("%s requires API version %d, only up to %d supported", lib_path.c_str(),
+        LOGW("%s requires API version %d, only up to %d supported", entry.path.c_str(),
              m->target_api_version, ZYGISK_NEXT_API_VERSION);
         return;
     }
 
     auto* handle = new ModuleHandle();
-    handle->lib_path = lib_path;
+    handle->lib_path = entry.path;
 
-    if (e.companion && m->target_api_version >= 3) {
-        startCompanion(handle, lib_path);
-    } else if (e.companion) {
+    if (entry.companion && m->target_api_version >= 3) {
+        handle->companion_nonce = plan.nonce;
+        handle->companion_listen_fd = openCompanionChannel(plan, entry);
+    } else if (entry.companion) {
         LOGW("module %s declares companion but targets API %d (< 3), "
              "skipping companion process",
-             lib_path.c_str(), m->target_api_version);
+             entry.path.c_str(), m->target_api_version);
     }
 
-    LOGI("loading module %s (companion=%s, api=%d)", lib_path.c_str(), e.companion ? "yes" : "no",
-         m->target_api_version);
+    LOGI("loading module %s (companion=%s, api=%d)", entry.path.c_str(),
+         entry.companion ? "yes" : "no", m->target_api_version);
     m->onModuleLoaded(handle, api::apiForVersion(m->target_api_version));
-}
-
-void loadFromFilesystem() {
-    DIR* d = opendir(kModulesDir);
-    if (!d) {
-        LOGW("cannot open %s: %s", kModulesDir, strerror(errno));
-        return;
-    }
-
-    std::vector<std::string> moddirs;
-    struct dirent* de;
-    while ((de = readdir(d))) {
-        if (de->d_name[0] == '.') continue;
-        std::string dir = std::string(kModulesDir) + "/" + de->d_name;
-        if (access((dir + "/disable").c_str(), F_OK) == 0) continue;
-        if (access((dir + "/remove").c_str(), F_OK) == 0) continue;
-        if (access((dir + "/zn_modules.txt").c_str(), R_OK) != 0) continue;
-        moddirs.push_back(std::move(dir));
-    }
-    closedir(d);
-
-    for (const auto& moddir : moddirs) {
-        for (auto& e : parseManifest(moddir, moddir + "/zn_modules.txt")) {
-            if (matches(e)) loadEntry(e);
-        }
-    }
 }
 
 }  //namespace
 
-void loadAll() {
-    std::vector<ipc::DaemonModule> mods;
-    if (ipc::listModules(process::exeName(), process::exePath(), mods)) {
-        LOGI("loadAllModules: got %zu module(s) from injector daemon", mods.size());
-        for (auto& m : mods) {
-            Entry e;
-            e.is_name = true;
-            e.target = process::exeName();
-            e.companion = m.companion;
-            e.lib = m.lib_path;
-            loadEntry(e, m.fd);
-            if (m.fd >= 0) close(m.fd);
-        }
-        return;
-    }
-    LOGW("loadAllModules: daemon unavailable, falling back to direct /data/adb/modules read");
-    loadFromFilesystem();
+void loadAll(const Plan& plan) {
+    LOGI("loading %zu module(s) from the boot plan", plan.modules.size());
+    for (const auto& entry : plan.modules) loadEntry(plan, entry);
 }
 
 }  //namespace znn::module
