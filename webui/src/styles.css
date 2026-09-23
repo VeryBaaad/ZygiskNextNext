@@ -1,4 +1,24 @@
+/*
+ * This file is part of Zygisk Next Next.
+ *
+ * Zygisk Next Next is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Zygisk Next Next is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Zygisk Next Next. If not, see <https://www.gnu.org/licenses/>.
+ *
+ * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
+ */
+
 :root {
+  --znn-column-width: 720px;
   --md-sys-density-scale: -1;
   --md-sys-typescale-body-large-font-size: 0.875rem;
   --md-sys-typescale-body-large-line-height: 1.25rem;
@@ -67,20 +87,67 @@ znn-top-bar {
   position: sticky;
   inset-block-start: 0;
   z-index: 30;
+  --znn-bar-expanded: 136px;
+  --znn-bar-collapsed: 64px;
+  height: var(--znn-bar-expanded);
 }
 
 .top-bar {
-  --m3e-app-bar-container-color: var(--md-sys-color-surface-container);
-  --m3e-app-bar-small-title-text-font-weight: 700;
-  --m3e-app-bar-padding-left: var(--md-sys-measurement-space150);
-  --m3e-app-bar-small-container-height: 72px;
+  overflow: hidden;
+  background-color: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+}
+
+.top-bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--md-sys-measurement-space100);
+  height: var(--znn-bar-collapsed);
+  padding-inline: var(--md-sys-measurement-space200);
+}
+
+.top-bar-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-inline-start: auto;
 }
 
 .top-bar-title {
   min-width: 0;
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: var(--md-sys-typescale-title-large-font-size, 1.375rem);
+  line-height: var(--md-sys-typescale-title-large-line-height, 1.75rem);
+  letter-spacing: var(--md-sys-typescale-title-large-tracking, 0);
+}
+
+.top-bar-row .top-bar-title {
+  opacity: var(--znn-bar-title-alpha, 0);
+}
+
+.top-bar-expanded {
+  position: relative;
+  overflow: hidden;
+  max-width: var(--znn-column-width);
+  margin-inline: auto;
+  height: calc(
+    (var(--znn-bar-expanded) - var(--znn-bar-collapsed)) *
+      (1 - var(--znn-bar-progress, 0))
+  );
+}
+
+.top-bar-expanded-title {
+  position: absolute;
+  inset-inline: var(--md-sys-measurement-space200);
+  inset-block-end: 8px;
+  padding-block-end: 6px;
+  opacity: calc(1 - var(--znn-bar-progress, 0));
+  font-size: var(--md-sys-typescale-display-small-font-size, 2.25rem);
+  line-height: var(--md-sys-typescale-display-small-line-height, 2.75rem);
+  letter-spacing: var(--md-sys-typescale-display-small-tracking, 0);
 }
 
 .top-bar m3e-icon-button {
@@ -107,7 +174,7 @@ znn-top-bar {
 }
 
 .content {
-  max-width: 720px;
+  max-width: var(--znn-column-width);
   margin: 0 auto;
   padding: var(--md-sys-measurement-space200);
   display: flex;
@@ -143,7 +210,7 @@ znn-top-bar {
 
 .status-icon {
   flex: none;
-  --m3e-icon-size: 36px;
+  --m3e-icon-size: 26px;
 }
 
 .status-icon.is-inactive {
@@ -155,7 +222,7 @@ znn-top-bar {
 }
 
 .status-label {
-  font-size: 1.125rem;
+  font-size: 1.1rem;
   font-weight: 500;
   line-height: 1.5rem;
 }
@@ -163,13 +230,13 @@ znn-top-bar {
 .status-badge {
   flex: none;
   margin-inline-start: auto;
-  padding: 2px var(--md-sys-measurement-space100);
-  border-radius: var(--md-sys-shape-corner-full);
+  padding: 3px var(--md-sys-measurement-space100);
+  border-radius: var(--md-sys-shape-corner-small);
   background: var(--md-sys-color-secondary);
   color: var(--md-sys-color-on-secondary);
   font-size: var(--md-sys-typescale-label-medium-font-size);
   font-weight: 500;
-  line-height: 1.25rem;
+  line-height: 1.1rem;
   white-space: nowrap;
 }
 
@@ -197,7 +264,7 @@ znn-top-bar {
 
 .info-label {
   font-size: var(--md-sys-typescale-body-large-font-size);
-  font-weight: 700;
+  font-weight: 500;
   line-height: var(--md-sys-typescale-body-large-line-height);
 }
 
@@ -232,7 +299,7 @@ znn-top-bar {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--md-sys-typescale-body-medium-font-size);
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .config-value {
@@ -283,6 +350,7 @@ znn-top-bar {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
 }
 
 .module-count {
