@@ -26,7 +26,6 @@ import ZnTag from './ZnTag.vue';
 
 const props = defineProps<{ modules: ZnnModule[] }>();
 
-/** Expanded rows survive re-renders, mirroring the other skins' behaviour. */
 const expanded = ref(new Set<string>());
 
 function toggle(id: string): void {

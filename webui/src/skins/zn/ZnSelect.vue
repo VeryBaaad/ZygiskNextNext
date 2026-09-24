@@ -24,11 +24,8 @@ import ZnIcon from './ZnIcon.vue';
 import { usePopover } from './use-popover';
 
 const props = defineProps<{
-  /** Currently selected option id. */
   modelValue: string;
-  /** Option ids, in menu order. */
   options: string[];
-  /** Display label for an option id. */
   label: (id: string) => string;
   disabled?: boolean;
 }>();

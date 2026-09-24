@@ -39,7 +39,6 @@ const props = defineProps<{ config: HookConfig; error?: boolean }>();
 
 const actions = useAppActions();
 
-/** Its own state so a failed write does not lock the whole card. */
 const busy = ref(false);
 
 const rows = computed<ConfigRow[]>(() => {

@@ -17,17 +17,6 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-/*
- * A from-scratch reimplementation of the ZygiskNext dashboard's visual
- * language: a narrow column of flat, hairline-bordered cards with a bold
- * label sitting above its value, pill-shaped state tags, and a centred
- * Github / credit footer. Only the measured design surface of the reference
- * UI is reproduced here; no code or markup is shared with it.
- *
- * Tokens are declared per resolved colour scheme on <html data-znn-scheme>,
- * which the theme controller already maintains for every skin.
- */
-
 html[data-znn-ui='zn'] {
   --zn-page: #ffffff;
   --zn-card: #fafafc;
