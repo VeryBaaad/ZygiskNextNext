@@ -17,24 +17,14 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-import './styles/base.css';
-
-import { createApp } from 'vue';
-
-import { enableEdgeToEdge, fullScreen } from 'kernelsu';
-
-import App from './App.vue';
-import { MODULE_NAME, VER_NAME } from './app-info';
-import { isKsuAvailable } from './api/ksu';
-
-document.title = `${MODULE_NAME} ${VER_NAME}`;
-
-if (isKsuAvailable()) {
-  try {
-    enableEdgeToEdge(true);
-    fullScreen(true);
-  } catch {
-  }
-}
-
-createApp(App).mount('#app');
+export {
+  ChevronForward,
+  GridView,
+  HorizontalSplit,
+  Info,
+  Layers,
+  Lock,
+  Refresh,
+  Theme,
+  Translate,
+} from 'miuix-vue/icons';

@@ -1,3 +1,4 @@
+<script setup lang="ts">
 /*
  * This file is part of Zygisk Next Next.
  *
@@ -17,24 +18,14 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-import './styles/base.css';
+import { t } from '../../i18n';
+</script>
 
-import { createApp } from 'vue';
-
-import { enableEdgeToEdge, fullScreen } from 'kernelsu';
-
-import App from './App.vue';
-import { MODULE_NAME, VER_NAME } from './app-info';
-import { isKsuAvailable } from './api/ksu';
-
-document.title = `${MODULE_NAME} ${VER_NAME}`;
-
-if (isKsuAvailable()) {
-  try {
-    enableEdgeToEdge(true);
-    fullScreen(true);
-  } catch {
-  }
-}
-
-createApp(App).mount('#app');
+<template>
+  <m3e-card class="empty-card" variant="filled">
+    <div slot="content" class="empty-body">
+      <m3e-icon name="info"></m3e-icon>
+      <span>{{ t('empty.title') }}</span>
+    </div>
+  </m3e-card>
+</template>

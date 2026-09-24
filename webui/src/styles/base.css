@@ -17,24 +17,38 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-import './styles/base.css';
-
-import { createApp } from 'vue';
-
-import { enableEdgeToEdge, fullScreen } from 'kernelsu';
-
-import App from './App.vue';
-import { MODULE_NAME, VER_NAME } from './app-info';
-import { isKsuAvailable } from './api/ksu';
-
-document.title = `${MODULE_NAME} ${VER_NAME}`;
-
-if (isKsuAvailable()) {
-  try {
-    enableEdgeToEdge(true);
-    fullScreen(true);
-  } catch {
-  }
+:root {
+  --znn-column-width: 720px;
 }
 
-createApp(App).mount('#app');
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family:
+    Roboto, 'Roboto Flex', 'Noto Sans', system-ui, -apple-system, 'Segoe UI',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The mount point must not introduce a box: both skins lay themselves out as if
+   they were the direct children of <body>. */
+#app {
+  display: contents;
+}
+
+/* The theme host is a real element in index.html and contributes no box either.
+   Its placement directly under <body> is load-bearing — that is where @m3e/web
+   publishes the colour tokens on :root. */
+m3e-theme {
+  display: contents;
+}

@@ -8,6 +8,14 @@
     />
     <meta name="color-scheme" content="light dark" />
     <title>Zygisk Next Next</title>
+    <style>
+      html[data-znn-ui='miuix'][data-znn-scheme='light'] {
+        background-color: #ffffff;
+      }
+      html[data-znn-ui='miuix'][data-znn-scheme='dark'] {
+        background-color: #242424;
+      }
+    </style>
   </head>
   <body>
     <m3e-theme
@@ -17,9 +25,7 @@
       motion="expressive"
       density="-2"
     >
-      <znn-top-bar></znn-top-bar>
-      <main id="content" class="content"></main>
-      <znn-footer></znn-footer>
+      <div id="app"></div>
     </m3e-theme>
     <script>
       (function () {
@@ -32,9 +38,18 @@
             scheme = 'dark';
           }
         } catch (e) {}
+        var ui = 'material';
+        try {
+          var savedUi = localStorage.getItem('znn_ui');
+          if (savedUi === 'material' || savedUi === 'miuix') ui = savedUi;
+        } catch (e) {}
+        var root = document.documentElement;
+        root.dataset.znnScheme = scheme;
+        root.dataset.znnUi = ui;
+        root.style.colorScheme = scheme;
+        if (scheme === 'dark') root.classList.add('m-theme-dark');
         var host = document.getElementById('znn-theme');
         if (host) host.setAttribute('scheme', scheme);
-        document.documentElement.style.colorScheme = scheme;
       })();
     </script>
     <script type="module" src="/src/main.ts"></script>

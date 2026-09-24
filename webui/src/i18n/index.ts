@@ -17,12 +17,16 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
+import { computed, ref, type ComputedRef } from 'vue';
+
 import { en, type Dictionary } from './en';
 import { zhCN } from './zh-CN';
 
 export type Locale = 'zh-CN' | 'en';
 
 export const LOCALE_STORAGE_KEY = 'znn_locale';
+
+export const LOCALES: Locale[] = ['zh-CN', 'en'];
 
 const dictionaries: Record<Locale, Dictionary> = {
   'zh-CN': zhCN,
@@ -34,10 +38,9 @@ export const LOCALE_LABELS: Record<Locale, string> = {
   en: 'English',
 };
 
-let current: Locale = detectLocale();
-let strings: Dictionary = dictionaries[current];
+const currentRef = ref<Locale>(detectLocale());
 
-const listeners = new Set<() => void>();
+export const locale: ComputedRef<Locale> = computed(() => currentRef.value);
 
 function detectLocale(): Locale {
   try {
@@ -49,30 +52,19 @@ function detectLocale(): Locale {
   return lang.startsWith('zh') ? 'zh-CN' : 'en';
 }
 
-export function getLocale(): Locale {
-  return current;
-}
-
-export function setLocale(locale: Locale): void {
-  if (locale === current) return;
-  current = locale;
-  strings = dictionaries[locale];
+export function setLocale(next: Locale): void {
+  if (next === currentRef.value) return;
+  currentRef.value = next;
   try {
-    localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    localStorage.setItem(LOCALE_STORAGE_KEY, next);
   } catch {
   }
-  document.documentElement.lang = locale;
-  for (const fn of listeners) fn();
+  applyLocale();
 }
 
-export function t(
-  key: keyof Dictionary | string,
-  params?: Record<string, string | number>,
-): string {
-  let text: string =
-    (strings as Record<string, string>)[key] ??
-    (dictionaries.en as Record<string, string>)[key] ??
-    key;
+export function t(key: string, params?: Record<string, string | number>): string {
+  const strings = dictionaries[currentRef.value] as Record<string, string>;
+  let text: string = strings[key] ?? (en as Record<string, string>)[key] ?? key;
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       text = text.split(`{${k}}`).join(String(v));
@@ -81,12 +73,6 @@ export function t(
   return text;
 }
 
-export function onLocaleChange(fn: () => void): () => void {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
-}
-
 export function applyLocale(): void {
-  document.documentElement.lang = current;
-  for (const fn of listeners) fn();
+  document.documentElement.lang = currentRef.value;
 }

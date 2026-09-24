@@ -17,11 +17,23 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-export function escapeHtml(value: unknown): string {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+import { inject, provide, type InjectionKey } from 'vue';
+
+import type { HookKind } from '../api/config';
+
+export interface AppActions {
+  refresh: () => void;
+  applyHookConfig: (kind: HookKind, value: string) => Promise<void>;
+}
+
+const APP_ACTIONS: InjectionKey<AppActions> = Symbol('znn-app-actions');
+
+export function provideAppActions(actions: AppActions): void {
+  provide(APP_ACTIONS, actions);
+}
+
+export function useAppActions(): AppActions {
+  const actions = inject(APP_ACTIONS);
+  if (!actions) throw new Error('app actions were not provided');
+  return actions;
 }
