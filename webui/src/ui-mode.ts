@@ -19,13 +19,13 @@
 
 import { computed, ref, watch, type ComputedRef } from 'vue';
 
-export type UiMode = 'material' | 'miuix';
+export type UiMode = 'material' | 'miuix' | 'zn';
 
 export const UI_MODE_STORAGE_KEY = 'znn_ui';
 
 export const DEFAULT_UI_MODE: UiMode = 'material';
 
-export const UI_MODES: UiMode[] = ['material', 'miuix'];
+export const UI_MODES: UiMode[] = ['material', 'miuix', 'zn'];
 
 const modeRef = ref<UiMode>(detectUiMode());
 
@@ -34,7 +34,7 @@ export const uiMode: ComputedRef<UiMode> = computed(() => modeRef.value);
 function detectUiMode(): UiMode {
   try {
     const saved = localStorage.getItem(UI_MODE_STORAGE_KEY);
-    if (saved === 'material' || saved === 'miuix') return saved;
+    if (saved && isUiMode(saved)) return saved;
   } catch {
   }
   return DEFAULT_UI_MODE;

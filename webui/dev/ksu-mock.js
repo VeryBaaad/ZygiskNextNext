@@ -18,7 +18,7 @@
   }
 
   var ui = params.get('ui');
-  if (ui === 'material' || ui === 'miuix') {
+  if (ui === 'material' || ui === 'miuix' || ui === 'zn') {
     try {
       localStorage.setItem('znn_ui', ui);
     } catch (error) {}
@@ -146,6 +146,6 @@
 
   console.info(
     '[znn preview] KernelSU bridge stubbed. Overrides: ?ksu=0 ?status=inactive ?modules=none ' +
-      '?ui=miuix|material ?theme=light|dark|auto ?locale=zh-CN|en ?slow=MS ?fail=config,modules',
+      '?ui=material|miuix|zn ?theme=light|dark|auto ?locale=zh-CN|en ?slow=MS ?fail=config,modules',
   );
 })();

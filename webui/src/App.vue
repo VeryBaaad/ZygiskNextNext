@@ -18,16 +18,17 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-import { computed, defineAsyncComponent, onMounted } from 'vue';
+import { computed, defineAsyncComponent, onMounted, type Component } from 'vue';
 
 import { provideAppActions } from './composables/app-actions';
 import { useAppData } from './composables/use-app-data';
 import { applyLocale } from './i18n';
 import { initTheme } from './theme';
-import { initUiMode, uiMode } from './ui-mode';
+import { initUiMode, uiMode, type UiMode } from './ui-mode';
 
 const MaterialShell = defineAsyncComponent(() => import('./skins/material/MaterialShell.vue'));
 const MiuixShell = defineAsyncComponent(() => import('./skins/miuix/MiuixShell.vue'));
+const ZnShell = defineAsyncComponent(() => import('./skins/zn/ZnShell.vue'));
 
 const { ksuAvailable, loading, status, system, modules, config, load, applyHookConfig } =
   useAppData();
@@ -39,7 +40,13 @@ provideAppActions({
   applyHookConfig: (kind, value) => applyHookConfig(kind, value),
 });
 
-const shell = computed(() => (uiMode.value === 'miuix' ? MiuixShell : MaterialShell));
+const SHELLS: Record<UiMode, Component> = {
+  material: MaterialShell,
+  miuix: MiuixShell,
+  zn: ZnShell,
+};
+
+const shell = computed(() => SHELLS[uiMode.value]);
 
 initTheme();
 initUiMode();
