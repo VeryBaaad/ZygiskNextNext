@@ -30,6 +30,19 @@ export const en: Record<string, string> = {
   'status.active': 'Active',
   'status.inactive': 'Inactive',
 
+  'card.basic': 'Basic Information',
+  'card.status': 'Status',
+  'card.settings': 'Settings',
+
+  'zn.running': 'Running',
+  'zn.stopped': 'Not running',
+  'zn.injector': 'Injector',
+  'zn.modules.title': 'ZN Modules ({n})',
+  'zn.modules.empty': 'No modules loaded',
+  'zn.modules.badge': 'Has issues',
+  'zn.issue.banner': 'Detected {n} module(s) with problems. Please check the module list.',
+  'zn.credit': 'Designed by Mufanc, 5ec1cff & VeryBaaad',
+
   'info.rootImpl': 'Root Implementation',
   'info.rootImpl.none': 'None detected',
   'info.mode': 'Current Mode',
@@ -53,6 +66,7 @@ export const en: Record<string, string> = {
 
   'ui.material': 'Material',
   'ui.miuix': 'Miuix',
+  'ui.zn': 'ZN-like',
 
   'empty.title': 'No cards to display',
 

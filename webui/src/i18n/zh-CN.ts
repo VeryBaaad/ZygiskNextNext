@@ -32,6 +32,19 @@ export const zhCN: Dictionary = {
   'status.active': '已激活',
   'status.inactive': '未激活',
 
+  'card.basic': '基本信息',
+  'card.status': '状态',
+  'card.settings': '设置',
+
+  'zn.running': '运行中',
+  'zn.stopped': '未运行',
+  'zn.injector': '注入器',
+  'zn.modules.title': 'ZN 模块 ({n})',
+  'zn.modules.empty': '未加载任何模块',
+  'zn.modules.badge': '存在问题',
+  'zn.issue.banner': '检测到 {n} 个存在问题的模块，请检查模块列表。',
+  'zn.credit': 'Designed by Mufanc, 5ec1cff & VeryBaaad',
+
   'info.rootImpl': 'Root 实现',
   'info.rootImpl.none': '未检测到',
   'info.mode': '当前模式',
@@ -55,6 +68,7 @@ export const zhCN: Dictionary = {
 
   'ui.material': 'Material',
   'ui.miuix': 'Miuix',
+  'ui.zn': '类ZN风格',
 
   'empty.title': '无卡片可绘制',
 

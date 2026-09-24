@@ -15,6 +15,12 @@
       html[data-znn-ui='miuix'][data-znn-scheme='dark'] {
         background-color: #242424;
       }
+      html[data-znn-ui='zn'][data-znn-scheme='light'] {
+        background-color: #ffffff;
+      }
+      html[data-znn-ui='zn'][data-znn-scheme='dark'] {
+        background-color: #101014;
+      }
     </style>
   </head>
   <body>
@@ -41,7 +47,9 @@
         var ui = 'material';
         try {
           var savedUi = localStorage.getItem('znn_ui');
-          if (savedUi === 'material' || savedUi === 'miuix') ui = savedUi;
+          if (savedUi === 'material' || savedUi === 'miuix' || savedUi === 'zn') {
+            ui = savedUi;
+          }
         } catch (e) {}
         var root = document.documentElement;
         root.dataset.znnScheme = scheme;
