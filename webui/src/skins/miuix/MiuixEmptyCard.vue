@@ -1,3 +1,4 @@
+<script setup lang="ts">
 /*
  * This file is part of Zygisk Next Next.
  *
@@ -17,24 +18,18 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-import './styles/base.css';
+import { MiuixBasicComponent, MiuixCard, MiuixIcon } from 'miuix-vue';
 
-import { createApp } from 'vue';
+import { t } from '../../i18n';
+import { Info } from './icons';
+</script>
 
-import { enableEdgeToEdge, fullScreen } from 'kernelsu';
-
-import App from './App.vue';
-import { MODULE_NAME, VER_NAME } from './app-info';
-import { isKsuAvailable } from './api/ksu';
-
-document.title = `${MODULE_NAME} ${VER_NAME}`;
-
-if (isKsuAvailable()) {
-  try {
-    enableEdgeToEdge(true);
-    fullScreen(true);
-  } catch {
-  }
-}
-
-createApp(App).mount('#app');
+<template>
+  <MiuixCard class="miuix-empty-card">
+    <MiuixBasicComponent :title="t('empty.title')" disabled>
+      <template #start>
+        <MiuixIcon :icon="Info" :size="24" />
+      </template>
+    </MiuixBasicComponent>
+  </MiuixCard>
+</template>

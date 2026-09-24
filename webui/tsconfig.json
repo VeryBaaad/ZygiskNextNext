@@ -12,7 +12,13 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["vite/client", "node"]
+    "jsx": "preserve",
+    "types": ["vite/client", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "miuix-vue": ["./node_modules/miuix-vue/dist/src/index.d.ts"],
+      "miuix-vue/icons": ["./node_modules/miuix-vue/dist/src/icons/extended/index.d.ts"]
+    }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts"]
 }

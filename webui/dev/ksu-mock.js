@@ -2,7 +2,6 @@
   if (window.ksu) return;
 
   var params = new URLSearchParams(location.search);
-  if (params.get('ksu') === '0') return;
 
   var theme = params.get('theme');
   if (theme === 'light' || theme === 'dark' || theme === 'auto') {
@@ -17,6 +16,15 @@
       localStorage.setItem('znn_locale', locale);
     } catch (error) {}
   }
+
+  var ui = params.get('ui');
+  if (ui === 'material' || ui === 'miuix') {
+    try {
+      localStorage.setItem('znn_ui', ui);
+    } catch (error) {}
+  }
+
+  if (params.get('ksu') === '0') return;
 
   var latency = Number(params.get('slow') || 120);
   var failures = (params.get('fail') || '').split(',').filter(Boolean);
@@ -138,6 +146,6 @@
 
   console.info(
     '[znn preview] KernelSU bridge stubbed. Overrides: ?ksu=0 ?status=inactive ?modules=none ' +
-      '?slow=MS ?fail=config,modules',
+      '?ui=miuix|material ?theme=light|dark|auto ?locale=zh-CN|en ?slow=MS ?fail=config,modules',
   );
 })();

@@ -18,7 +18,6 @@
  */
 
 :root {
-  --znn-column-width: 720px;
   --md-sys-density-scale: -1;
   --md-sys-typescale-body-large-font-size: 0.875rem;
   --md-sys-typescale-body-large-line-height: 1.25rem;
@@ -46,11 +45,12 @@
   --md-sys-motion-spring-slow-effects: 300ms cubic-bezier(0.34, 0.88, 0.34, 1);
 }
 
-m3e-theme {
-  display: contents;
+html[data-znn-ui='material'] body {
+  background-color: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-background, #1c1b1e);
 }
 
-m3e-menu {
+html[data-znn-ui='material'] m3e-menu {
   --m3e-menu-item-selected-container-color: var(--md-sys-color-secondary-container);
   --m3e-menu-item-selected-color: var(--md-sys-color-on-secondary-container);
   --m3e-menu-item-selected-container-hover-color: var(--md-sys-color-on-secondary-container);
@@ -58,31 +58,7 @@ m3e-menu {
   --m3e-menu-item-selected-ripple-color: var(--md-sys-color-on-secondary-container);
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-html {
-  height: 100%;
-}
-
-html body {
-  background-color: var(--md-sys-color-surface);
-}
-
-body {
-  margin: 0;
-  min-height: 100%;
-  font-family:
-    Roboto, 'Roboto Flex', 'Noto Sans', system-ui, -apple-system, 'Segoe UI',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  color: var(--md-sys-color-on-background, #1c1b1e);
-}
-
-znn-top-bar {
+html[data-znn-ui='material'] .top-bar-host {
   display: block;
   position: sticky;
   inset-block-start: 0;
@@ -92,13 +68,13 @@ znn-top-bar {
   height: var(--znn-bar-expanded);
 }
 
-.top-bar {
+html[data-znn-ui='material'] .top-bar {
   overflow: hidden;
   background-color: var(--md-sys-color-surface);
   color: var(--md-sys-color-on-surface);
 }
 
-.top-bar-row {
+html[data-znn-ui='material'] .top-bar-row {
   display: flex;
   align-items: center;
   gap: var(--md-sys-measurement-space100);
@@ -106,14 +82,14 @@ znn-top-bar {
   padding-inline: var(--md-sys-measurement-space200);
 }
 
-.top-bar-actions {
+html[data-znn-ui='material'] .top-bar-actions {
   display: flex;
   align-items: center;
   flex: none;
   margin-inline-start: auto;
 }
 
-.top-bar-title {
+html[data-znn-ui='material'] .top-bar-title {
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -124,11 +100,11 @@ znn-top-bar {
   letter-spacing: var(--md-sys-typescale-title-large-tracking, 0);
 }
 
-.top-bar-row .top-bar-title {
+html[data-znn-ui='material'] .top-bar-row .top-bar-title {
   opacity: var(--znn-bar-title-alpha, 0);
 }
 
-.top-bar-expanded {
+html[data-znn-ui='material'] .top-bar-expanded {
   position: relative;
   overflow: hidden;
   max-width: var(--znn-column-width);
@@ -139,7 +115,7 @@ znn-top-bar {
   );
 }
 
-.top-bar-expanded-title {
+html[data-znn-ui='material'] .top-bar-expanded-title {
   position: absolute;
   inset-inline: var(--md-sys-measurement-space200);
   inset-block-end: 8px;
@@ -150,20 +126,20 @@ znn-top-bar {
   letter-spacing: var(--md-sys-typescale-display-small-tracking, 0);
 }
 
-.top-bar m3e-icon-button {
+html[data-znn-ui='material'] .top-bar m3e-icon-button {
   --m3e-icon-button-small-icon-size: 22px;
 }
 
-.top-bar m3e-menu,
-.config-row m3e-menu {
+html[data-znn-ui='material'] .top-bar m3e-menu,
+html[data-znn-ui='material'] .config-row m3e-menu {
   inset-inline-start: auto !important;
 }
 
-.top-bar m3e-menu {
+html[data-znn-ui='material'] .top-bar m3e-menu {
   inset-inline-end: var(--md-sys-measurement-space50) !important;
 }
 
-.top-bar-refresh.is-loading > m3e-icon {
+html[data-znn-ui='material'] .top-bar-refresh.is-loading > m3e-icon {
   animation: znn-spin 1s linear infinite;
 }
 
@@ -173,7 +149,7 @@ znn-top-bar {
   }
 }
 
-.content {
+html[data-znn-ui='material'] .znn-content {
   max-width: var(--znn-column-width);
   margin: 0 auto;
   padding: var(--md-sys-measurement-space200);
@@ -182,52 +158,52 @@ znn-top-bar {
   gap: var(--md-sys-measurement-space200);
 }
 
-.content m3e-card {
+html[data-znn-ui='material'] .znn-content m3e-card {
   --m3e-card-shape: var(--md-sys-shape-corner-extra-large);
   --m3e-card-padding: var(--md-sys-measurement-space200);
   --m3e-card-container-elevation: var(--md-sys-elevation-level0);
 }
 
-.content m3e-card:not(.status-card) {
+html[data-znn-ui='material'] .znn-content m3e-card:not(.status-card) {
   --m3e-filled-card-container-color: var(--md-sys-color-surface-container);
 }
 
-.card-body {
+html[data-znn-ui='material'] .card-body {
   display: flex;
   flex-direction: column;
 }
 
-.status-card {
+html[data-znn-ui='material'] .status-card {
   --m3e-filled-card-container-color: var(--md-sys-color-secondary-container);
   --m3e-filled-card-text-color: var(--md-sys-color-on-secondary-container);
 }
 
-.status-body {
+html[data-znn-ui='material'] .status-body {
   display: flex;
   align-items: center;
   gap: var(--md-sys-measurement-space200);
 }
 
-.status-icon {
+html[data-znn-ui='material'] .status-icon {
   flex: none;
   --m3e-icon-size: 26px;
 }
 
-.status-icon.is-inactive {
+html[data-znn-ui='material'] .status-icon.is-inactive {
   color: var(--md-sys-color-error);
 }
 
-.status-text {
+html[data-znn-ui='material'] .status-text {
   min-width: 0;
 }
 
-.status-label {
+html[data-znn-ui='material'] .status-label {
   font-size: 1.1rem;
   font-weight: 500;
   line-height: 1.5rem;
 }
 
-.status-badge {
+html[data-znn-ui='material'] .status-badge {
   flex: none;
   margin-inline-start: auto;
   padding: 3px var(--md-sys-measurement-space100);
@@ -240,35 +216,35 @@ znn-top-bar {
   white-space: nowrap;
 }
 
-.status-version {
+html[data-znn-ui='material'] .status-version {
   margin-block-start: 2px;
   font-size: var(--md-sys-typescale-body-small-font-size);
   line-height: var(--md-sys-typescale-body-small-line-height);
   opacity: 0.8;
 }
 
-.info-row {
+html[data-znn-ui='material'] .info-row {
   display: flex;
   flex-direction: column;
   gap: var(--md-sys-measurement-space25);
   padding-block: var(--md-sys-measurement-space150);
 }
 
-.info-row:first-child {
+html[data-znn-ui='material'] .info-row:first-child {
   padding-block-start: 0;
 }
 
-.info-row:last-child {
+html[data-znn-ui='material'] .info-row:last-child {
   padding-block-end: 0;
 }
 
-.info-label {
+html[data-znn-ui='material'] .info-label {
   font-size: var(--md-sys-typescale-body-large-font-size);
   font-weight: 500;
   line-height: var(--md-sys-typescale-body-large-line-height);
 }
 
-.info-value {
+html[data-znn-ui='material'] .info-value {
   min-width: 0;
   overflow-wrap: anywhere;
   font-size: var(--md-sys-typescale-body-medium-font-size);
@@ -276,7 +252,7 @@ znn-top-bar {
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.config-row {
+html[data-znn-ui='material'] .config-row {
   position: relative;
   display: flex;
   align-items: center;
@@ -285,15 +261,15 @@ znn-top-bar {
   padding-block: var(--md-sys-measurement-space100);
 }
 
-.config-row:first-child {
+html[data-znn-ui='material'] .config-row:first-child {
   padding-block-start: 0;
 }
 
-.config-row:last-child {
+html[data-znn-ui='material'] .config-row:last-child {
   padding-block-end: 0;
 }
 
-.config-label {
+html[data-znn-ui='material'] .config-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -302,42 +278,35 @@ znn-top-bar {
   font-weight: 500;
 }
 
-.config-value {
+html[data-znn-ui='material'] .config-value {
   --m3e-button-container-height: 44px;
   flex: none;
   max-width: 58%;
 }
 
-.config-value > span {
+html[data-znn-ui='material'] .config-value > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.config-row m3e-menu {
+html[data-znn-ui='material'] .config-row m3e-menu {
   inset-inline-end: var(--znn-menu-inline-end, 0px) !important;
 }
 
-.config-hint {
-  margin: var(--md-sys-measurement-space100) 0 0;
-  font-size: var(--md-sys-typescale-body-small-font-size);
-  line-height: var(--md-sys-typescale-body-small-line-height);
-  color: var(--md-sys-color-on-surface-variant);
-}
-
-.modules-empty {
+html[data-znn-ui='material'] .modules-empty {
   padding-block: var(--md-sys-measurement-space100);
   font-size: var(--md-sys-typescale-body-medium-font-size);
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.modules-list,
-.info-list {
+html[data-znn-ui='material'] .modules-list,
+html[data-znn-ui='material'] .info-list {
   --m3e-divider-inset-start-size: 0px;
   --m3e-divider-inset-end-size: 0px;
 }
 
-.module-line {
+html[data-znn-ui='material'] .module-line {
   display: flex;
   align-items: baseline;
   gap: var(--md-sys-measurement-space100);
@@ -345,7 +314,7 @@ znn-top-bar {
   font-size: var(--md-sys-typescale-body-large-font-size);
 }
 
-.module-name {
+html[data-znn-ui='material'] .module-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -353,30 +322,30 @@ znn-top-bar {
   font-weight: 500;
 }
 
-.module-count {
+html[data-znn-ui='material'] .module-count {
   flex: none;
   margin-inline-start: auto;
   font-size: var(--md-sys-typescale-body-small-font-size);
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.module-count.has-failed {
+html[data-znn-ui='material'] .module-count.has-failed {
   color: var(--md-sys-color-error);
 }
 
-.modules-list m3e-expandable-list-item {
+html[data-znn-ui='material'] .modules-list m3e-expandable-list-item {
   --m3e-list-item-one-line-height: 48px;
   --m3e-list-item-leading-space: var(--md-sys-measurement-space50);
   --m3e-list-item-trailing-space: var(--md-sys-measurement-space25);
   --m3e-expandable-list-item-toggle-icon-container-width: 24px;
 }
 
-.proc-list {
+html[data-znn-ui='material'] .proc-list {
   padding-inline: 0;
   padding-block-end: var(--md-sys-measurement-space150);
 }
 
-.proc-row {
+html[data-znn-ui='material'] .proc-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -387,7 +356,7 @@ znn-top-bar {
   background: var(--md-sys-color-surface-container-high);
 }
 
-.proc-name {
+html[data-znn-ui='material'] .proc-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -395,14 +364,14 @@ znn-top-bar {
   font-size: var(--md-sys-typescale-body-medium-font-size);
 }
 
-.proc-pid {
+html[data-znn-ui='material'] .proc-pid {
   flex: none;
   font-size: var(--md-sys-typescale-body-small-font-size);
   font-variant-numeric: tabular-nums;
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.proc-failed-row {
+html[data-znn-ui='material'] .proc-failed-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -415,7 +384,7 @@ znn-top-bar {
   font-size: var(--md-sys-typescale-body-medium-font-size);
 }
 
-.proc-failed-reason {
+html[data-znn-ui='material'] .proc-failed-reason {
   flex: 1 1 auto;
   max-width: 66%;
   text-align: end;
@@ -425,7 +394,7 @@ znn-top-bar {
   opacity: 0.85;
 }
 
-.proc-failed-title {
+html[data-znn-ui='material'] .proc-failed-title {
   margin-block-start: var(--md-sys-measurement-space100);
   padding-inline: var(--md-sys-measurement-space100);
   font-size: var(--md-sys-typescale-label-small-font-size);
@@ -433,13 +402,13 @@ znn-top-bar {
   color: var(--md-sys-color-error);
 }
 
-.proc-empty {
+html[data-znn-ui='material'] .proc-empty {
   padding: var(--md-sys-measurement-space50) var(--md-sys-measurement-space100);
   font-size: var(--md-sys-typescale-body-small-font-size);
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.empty-body {
+html[data-znn-ui='material'] .empty-body {
   display: flex;
   align-items: center;
   gap: var(--md-sys-measurement-space100);
@@ -448,29 +417,29 @@ znn-top-bar {
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.empty-body > m3e-icon {
+html[data-znn-ui='material'] .empty-body > m3e-icon {
   --m3e-icon-size: 20px;
 }
 
-znn-footer {
+html[data-znn-ui='material'] .footer-host {
   display: flex;
   justify-content: center;
   padding: var(--md-sys-measurement-space50) var(--md-sys-measurement-space200)
     var(--md-sys-measurement-space300);
 }
 
-.footer-btn {
+html[data-znn-ui='material'] .footer-btn {
   --m3e-button-container-height: 44px;
 }
 
-.github-logo {
+html[data-znn-ui='material'] .github-logo {
   width: 18px;
   height: 18px;
   fill: currentColor;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .top-bar-refresh.is-loading > m3e-icon {
+  html[data-znn-ui='material'] .top-bar-refresh.is-loading > m3e-icon {
     animation: none;
   }
 }

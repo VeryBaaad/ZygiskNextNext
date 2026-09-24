@@ -41,6 +41,7 @@ export const zhCN: Dictionary = {
   'modules.failed': '{n} 个失败',
   'modules.failedTitle': '注入失败',
   'modules.noModules': '无模块',
+  'modules.noProcesses': '无进程',
 
   'config.inlineHook': 'Inline Hook 实现',
   'config.pltHook': 'PLT Hook 实现',
@@ -48,10 +49,12 @@ export const zhCN: Dictionary = {
   'config.mode.auto': '自动',
   'config.mode.ptrace': 'ptrace mode',
   'config.mode.proc': 'proc mode',
-  'config.reloadHint':
-    'Hook 引擎对新启动的目标进程生效，已运行的进程需重启后才会使用新引擎。跟踪模式在注入器启动时生效：proc 立即生效，ptrace 需重启后生效。',
+  'config.uiStyle': '界面样式',
   'config.saved': '已保存',
   'config.saveFailed': '保存失败',
+
+  'ui.material': 'Material',
+  'ui.miuix': 'Miuix',
 
   'empty.title': '无卡片可绘制',
 

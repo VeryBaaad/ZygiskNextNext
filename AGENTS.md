@@ -28,7 +28,7 @@ To comply with this and maintain legal and technical independence, you must adhe
 - injector/: The standalone injector executable shipped as bin/<abi>/injector. NOT part of loader/ and never built by it; it is a Rust crate (cargo) with its own Gradle module, which drives cargo for every shipped ABI. Every `unsafe` block lives under injector/src/sys/, and the crate root denies `unsafe_code` so that stays enforceable.
 - loader/src/include/: The ZygiskNext API header (zygisk_next_api.h). DO NOT EDIT THIS.
 - module/: The Magisk / KernelSU / APatch module wrapper. Handles installation, environment setup, permission management, and status reporting. It collects the loader library and the injector binary from their own Gradle modules when building the zip.
-- webui/: Web-based user interface components (KernelSU WebUI) for module management and configuration.
+- webui/: The KernelSU WebUI, a Vue 3 app with two switchable skins under src/skins/. material/ renders @m3e/web custom elements (Material 3 Expressive) and miuix/ renders miuix-vue components; each skin is a lazy chunk that owns its own component library, so never import one skin's library from the other. src/ui-mode.ts (localStorage znn_ui, default material) selects the skin, and src/composables/use-app-data.ts feeds both. `npm run dev` stubs the KernelSU bridge through dev/ksu-mock.js, with ?ui= ?theme= ?locale= ?status= ?modules= ?fail= overrides. The @m3e/web theme host is declared in index.html and MUST stay a direct child of <body>: that is the only position in which @m3e/web publishes the Material colour tokens on :root, which the page background depends on.
 
 ## DEVELOPMENT GUIDELINES
 
