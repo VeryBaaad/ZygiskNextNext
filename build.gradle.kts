@@ -83,8 +83,6 @@ val androidCompileSdkMinorVersion = 2
 val androidBuildToolsVersion = "37.0.0"
 val androidCompileNdkVersion = "30.0.16248370"
 
-// :injector is a Rust crate without an Android plugin, so it configures itself
-// from these instead of from AGP's DSL.
 extra.set("androidMinSdkVersion", androidMinSdkVersion)
 extra.set("androidNdkVersion", androidCompileNdkVersion)
 

@@ -6,9 +6,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_subdirectory(external)
 
+if (LSPLT_STANDALONE)
+    find_package(cxx REQUIRED CONFIG)
+endif ()
+
 add_library(elfutil STATIC utils/elf_util.cpp)
 target_include_directories(elfutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(elfutil PUBLIC lzma)
+if (TARGET cxx::cxx)
+    target_link_libraries(elfutil PUBLIC cxx::cxx)
+endif ()
 
 add_library(loader SHARED
     entry.cpp
@@ -65,5 +72,8 @@ if (NOT ANDROID_ABI STREQUAL "riscv64")
     set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} xhook)
 endif()
 target_link_libraries(loader PRIVATE ${LOADER_LINK_LIBS})
+if (TARGET cxx::cxx)
+    target_link_libraries(loader PRIVATE cxx::cxx)
+endif ()
 
 target_compile_options(loader PRIVATE -Wall -Wextra -fvisibility=hidden)

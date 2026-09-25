@@ -1,6 +1,6 @@
 [package]
 name = "injector"
-version = "1.0.0"
+version = "1.2.0"
 edition = "2024"
 description = "A from-scratch, standalone implementation of the Zygisk Next module."
 license = "GPL-3.0-or-later"
@@ -29,18 +29,21 @@ name = "injector"
 path = "src/main.rs"
 
 [profile.dev]
-opt-level = 0
-lto = false
-codegen-units = 1
+opt-level = "s"
+debug = true
+strip = "symbol"
 panic = "unwind"
-debug = 1
-strip = "debuginfo"
+incremental = true
+overflow-checks = true
+lto = true
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = true
 codegen-units = 1
+strip = "symbols"
 panic = "abort"
-debug = false
-strip = true
+debug = "line-tables-only"
 incremental = false
+debug-assertions = false
+overflow-checks = false

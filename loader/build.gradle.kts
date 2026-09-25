@@ -10,6 +10,8 @@ val releaseFlags: Array<String> = rootProject.extra["releaseCFlags"] as Array<St
 val releaseLinkerFlags: String = rootProject.extra["releaseLinkerFlags"] as String
 val ccachePath: String? = rootProject.extra["ccachePath"] as String?
 
+val libcxxVersion: String = rootProject.extra["androidNdkVersion"] as String
+
 ccachePath?.let {
     println("loader: Use ccache: $it")
 }
@@ -20,6 +22,7 @@ android {
     }
     buildFeatures {
         buildConfig = false
+        prefab = true
     }
 
     externalNativeBuild.cmake {
@@ -28,8 +31,8 @@ android {
 
     defaultConfig {
         externalNativeBuild.cmake {
-            arguments += "-DANDROID_STL=c++_static"
-            arguments += "-DLSPLT_STANDALONE=OFF"
+            arguments += "-DANDROID_STL=none"
+            arguments += "-DLSPLT_STANDALONE=ON"
             cFlags("-std=c18", *defaultCFlags)
             cppFlags("-std=c++20", *defaultCFlags)
             ccachePath?.let {
@@ -49,4 +52,8 @@ android {
             }
         }
     }
+}
+
+dependencies {
+    implementation("org.lsposed.libcxx:libcxx:$libcxxVersion")
 }

@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(external)
 
+if (LSPLT_STANDALONE)
+    find_package(cxx REQUIRED CONFIG)
+endif ()
+
 if (ANDROID_ABI STREQUAL "riscv64")
 	set(ANDROID_PLATFORM "android-35")
 endif ()
@@ -86,3 +90,11 @@ else ()
 endif ()
 
 add_subdirectory(lzma)
+
+if (TARGET cxx::cxx)
+    if (ANDROID_ABI STREQUAL "riscv64")
+        target_link_libraries(rv64hook-static cxx::cxx)
+    else ()
+        target_link_libraries(dobby cxx::cxx)
+    endif ()
+endif ()
