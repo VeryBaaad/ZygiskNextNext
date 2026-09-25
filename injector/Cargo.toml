@@ -31,7 +31,7 @@ path = "src/main.rs"
 [profile.dev]
 opt-level = "s"
 debug = true
-strip = "symbol"
+strip = "symbols"
 panic = "unwind"
 incremental = true
 overflow-checks = true
