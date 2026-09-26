@@ -10,7 +10,7 @@ A Magisk module that attempts to implement the ZygiskNext API, using Dobby and L
 
 ## Supported Versions
 
-- Android 5.0 - 17 QPR2 Beta5
+- Android 5.0 - 17 QPR2 Beta6
 - Linux 3.17 or newer
 
 ## Install
