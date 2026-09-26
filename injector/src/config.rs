@@ -62,9 +62,9 @@ pub fn inline_hook_options() -> Vec<&'static str> {
 
 pub fn plt_hook_options() -> Vec<&'static str> {
     if runtime_abi() == "riscv64" {
-        vec!["lsplt"]
+        vec!["lsplt", "plti"]
     } else {
-        vec!["lsplt", "bytehook", "xhook"]
+        vec!["lsplt", "plti", "bytehook", "xhook"]
     }
 }
 

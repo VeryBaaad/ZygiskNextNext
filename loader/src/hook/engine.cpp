@@ -47,6 +47,7 @@ const char* pltEngineName(PltEngine e) {
         case PltEngine::kLsplt: return "lsplt";
         case PltEngine::kByteHook: return "bytehook";
         case PltEngine::kXHook: return "xhook";
+        case PltEngine::kPlti: return "plti";
     }
     return "unknown";
 }
@@ -91,6 +92,8 @@ bool pltEngineSupported(PltEngine e) {
 #else
             return false;
 #endif
+        case PltEngine::kPlti:
+            return true;
     }
     return false;
 }
@@ -131,6 +134,8 @@ bool parsePltEngine(const char* name, PltEngine* out) {
         e = PltEngine::kByteHook;
     } else if (strcmp(name, "xhook") == 0) {
         e = PltEngine::kXHook;
+    } else if (strcmp(name, "plti") == 0) {
+        e = PltEngine::kPlti;
     } else {
         return false;
     }

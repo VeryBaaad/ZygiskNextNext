@@ -22,7 +22,7 @@
 namespace znn::hook {
 
 enum class InlineEngine { kDobby, kShadowHook, kRv64Hook };
-enum class PltEngine { kLsplt, kByteHook, kXHook };
+enum class PltEngine { kLsplt, kByteHook, kXHook, kPlti };
 
 const char* inlineEngineName(InlineEngine e);
 const char* pltEngineName(PltEngine e);
