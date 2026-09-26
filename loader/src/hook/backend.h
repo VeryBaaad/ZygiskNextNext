@@ -21,6 +21,7 @@
 
 #include <sys/types.h>
 
+#include <cstdint>
 #include <string>
 
 namespace znn::hook::backend {
@@ -43,5 +44,8 @@ bool bytehookHook(const std::string& caller_path, const char* symbol, void* repl
 
 bool xhookHook(const std::string& caller_path, const char* symbol, void* replacement,
                void** original);
+
+bool pltiHook(const std::string& caller_path, uintptr_t caller_base, const char* symbol,
+              void* replacement, void** original);
 
 }  //namespace znn::hook::backend

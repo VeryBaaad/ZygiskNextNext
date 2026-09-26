@@ -31,6 +31,7 @@ add_library(loader SHARED
     hook/backend/lsplt.cpp
     hook/backend/bytehook.cpp
     hook/backend/xhook.cpp
+    hook/backend/plti.cpp
     api/hook.cpp
     api/symbols.cpp
     api/companion.cpp
@@ -71,6 +72,7 @@ if (NOT ANDROID_ABI STREQUAL "riscv64")
     set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} bytehook)
     set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} xhook)
 endif()
+set(LOADER_LINK_LIBS ${LOADER_LINK_LIBS} plti)
 target_link_libraries(loader PRIVATE ${LOADER_LINK_LIBS})
 if (TARGET cxx::cxx)
     target_link_libraries(loader PRIVATE cxx::cxx)

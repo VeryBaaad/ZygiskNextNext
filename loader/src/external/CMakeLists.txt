@@ -78,6 +78,8 @@ if (NOT ANDROID_ABI STREQUAL "riscv64")
     )
 endif ()
 
+add_subdirectory(plti)
+
 if (ANDROID_ABI STREQUAL "riscv64")
     add_subdirectory(rv64hook)
         target_compile_options(rv64hook-static PRIVATE -w)

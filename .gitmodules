@@ -16,3 +16,6 @@
 [submodule "loader/src/external/xhook"]
 	path = loader/src/external/xhook
 	url = https://github.com/iqiyi/xHook.git
+[submodule "loader/src/external/plti"]
+	path = loader/src/external/plti
+	url = https://github.com/PerformanC/PLTI.git

@@ -36,7 +36,7 @@
 
   var config = {
     inlineHook: { value: 'dobby', options: ['dobby', 'shadowhook', 'rv64hook'] },
-    pltHook: { value: 'lsplt', options: ['lsplt', 'bytehook', 'xhook'] },
+    pltHook: { value: 'lsplt', options: ['lsplt', 'plti', 'bytehook', 'xhook'] },
     mode: { value: 'proc', options: ['auto', 'proc', 'ptrace'] },
   };
 

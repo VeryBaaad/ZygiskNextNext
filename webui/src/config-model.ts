@@ -27,6 +27,7 @@ export const ENGINE_LABELS: Record<string, string> = {
   lsplt: 'LSPlt',
   bytehook: 'ByteHook',
   xhook: 'xHook',
+  plti: 'PLTI',
 };
 
 export interface HookRow {
