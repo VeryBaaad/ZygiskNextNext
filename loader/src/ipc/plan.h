@@ -25,7 +25,7 @@
 namespace znn::ipc {
 
 constexpr uint32_t kPlanMagic = 0x5A4E4E31;  //"ZNN1"
-constexpr uint32_t kPlanVersion = 1;
+constexpr uint32_t kPlanVersion = 2;
 
 constexpr uint32_t kPlanModuleCompanion = 1u << 0;
 
@@ -54,12 +54,13 @@ struct Plan {
     uint32_t nonce;
     PlanString inline_engine;
     PlanString plt_engine;
+    PlanString debugdata;
 };
 
 constexpr size_t kPlanHeaderSize = sizeof(Plan);
 constexpr size_t kPlanModuleSize = sizeof(PlanModule);
 
-static_assert(kPlanHeaderSize == 36, "the boot plan header must stay 36 bytes");
+static_assert(kPlanHeaderSize == 44, "the boot plan header must stay 44 bytes");
 static_assert(kPlanModuleSize == 20, "a boot plan module must stay 20 bytes");
 
 size_t channelName(uint32_t nonce, uint32_t index, char* out);

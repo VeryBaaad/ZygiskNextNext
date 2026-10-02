@@ -21,11 +21,11 @@ use std::fmt::Write as _;
 use std::io::Read;
 
 pub const PLAN_MAGIC: u32 = 0x5A4E_4E31; //"ZNN1"
-pub const PLAN_VERSION: u32 = 1;
+pub const PLAN_VERSION: u32 = 2;
 pub const MODULE_COMPANION: u32 = 1 << 0;
 pub const MAX_MODULES: usize = 32;
 pub const MAX_BYTES: usize = 32 * 1024;
-pub const HEADER_SIZE: usize = 36;
+pub const HEADER_SIZE: usize = 44;
 pub const MODULE_SIZE: usize = 20;
 
 const CHANNEL_PREFIX: &str = "znn";
@@ -54,6 +54,7 @@ pub struct Plan {
     pub modules: Vec<PlanModule>,
     pub inline_engine: String,
     pub plt_engine: String,
+    pub debugdata: String,
     pub nonce: u32,
 }
 
@@ -89,6 +90,7 @@ impl Plan {
         let mut blob = Vec::new();
         let inline = push_string(&mut blob, &self.inline_engine);
         let plt = push_string(&mut blob, &self.plt_engine);
+        let debugdata = push_string(&mut blob, &self.debugdata);
         let paths: Vec<(u32, u32)> = self
             .modules
             .iter()
@@ -108,6 +110,7 @@ impl Plan {
         push_u32(&mut out, self.nonce);
         push_string_ref(&mut out, inline);
         push_string_ref(&mut out, plt);
+        push_string_ref(&mut out, debugdata);
 
         for (module, path) in self.modules.iter().zip(paths) {
             let mut flags = 0u32;
@@ -172,6 +175,7 @@ mod tests {
             ],
             inline_engine: "dobby".to_owned(),
             plt_engine: "lsplt".to_owned(),
+            debugdata: "xz".to_owned(),
             nonce: 0x1234_5678,
         };
 
@@ -192,6 +196,9 @@ mod tests {
         assert_eq!(word(28), 6);
         assert_eq!(word(32), 5);
         assert_eq!(&bytes[blob + 6..blob + 11], b"lsplt");
+        assert_eq!(word(36), 12);
+        assert_eq!(word(40), 2);
+        assert_eq!(&bytes[blob + 12..blob + 14], b"xz");
 
         assert_eq!(word(HEADER_SIZE), 12);
         assert_eq!(word(HEADER_SIZE + 4), MODULE_COMPANION);
@@ -217,6 +224,7 @@ mod tests {
                 .collect(),
             inline_engine: String::new(),
             plt_engine: String::new(),
+            debugdata: String::new(),
             nonce: 1,
         };
         assert!(plan.encode().is_none());

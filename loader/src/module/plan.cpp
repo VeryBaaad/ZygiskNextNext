@@ -75,8 +75,9 @@ bool parsePlan(const void* raw, Plan& out) {
     out = Plan();
     out.nonce = header.nonce;
     if (!blobString(blob, blob_size, header.inline_engine, out.inline_engine) ||
-        !blobString(blob, blob_size, header.plt_engine, out.plt_engine)) {
-        LOGE("boot plan: hook engine names are out of bounds");
+        !blobString(blob, blob_size, header.plt_engine, out.plt_engine) ||
+        !blobString(blob, blob_size, header.debugdata, out.debugdata)) {
+        LOGE("boot plan: option names are out of bounds");
         return false;
     }
 

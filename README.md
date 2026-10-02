@@ -60,7 +60,7 @@ Create a Pull Request.
 - [Dobby](https://github.com/jmpews/Dobby), [rv64hook](https://github.com/eirv/riscv64-inline-hook) and [ShadowHook](https://github.com/bytedance/android-inline-hook): used for inline hooking
 - [LSPlt](https://github.com/LSPosed/LSPlt), [ByteHook](https://github.com/bytedance/bhook), [xHook](https://github.com/iqiyi/xHook) and [PLTI](https://github.com/PerformanC/PLTI): uesd for plt hooking
 - [libcxx](https://github.com/LSPosed/prefab-libcxx): libc++/libc++abi statically linked into the loader
-- [LZMA SDK](https://www.7-zip.org/sdk.html): `.gnu_debugdata` decompressor
+- [LZMA SDK](https://www.7-zip.org/sdk.html) and [xz-embedded](https://github.com/tukaani-project/xz-embedded): `.gnu_debugdata` decompressor
 
 ## License
 

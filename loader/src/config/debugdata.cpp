@@ -17,30 +17,21 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
-#pragma once
+#include "config/debugdata.h"
 
-#include <stdint.h>
+#include "log.h"
+#include "utils/debugdata.h"
 
-#include <string>
-#include <vector>
+namespace znn::config {
 
-namespace znn::module {
+void resolveDebugDataBackend(const std::string& name) {
+    debugdata::Backend backend = debugdata::backend();
 
-struct PlanModule {
-    int fd = -1;
-    bool companion = false;
-    uint32_t index = 0;
-    std::string path;
-};
+    debugdata::Backend parsed;
+    if (debugdata::parseBackend(name.c_str(), &parsed)) backend = parsed;
 
-struct Plan {
-    std::vector<PlanModule> modules;
-    std::string inline_engine;
-    std::string plt_engine;
-    std::string debugdata;
-    uint32_t nonce = 0;
-};
+    debugdata::setBackend(backend);
+    LOGI(".gnu_debugdata backend: %s", debugdata::backendName(backend));
+}
 
-bool parsePlan(const void* raw, Plan& out);
-
-}  //namespace znn::module
+}  //namespace znn::config

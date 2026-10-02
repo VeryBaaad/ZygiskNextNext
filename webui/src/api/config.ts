@@ -28,9 +28,10 @@ export interface HookConfig {
   inlineHook: HookEngineEntry;
   pltHook: HookEngineEntry;
   mode: HookEngineEntry;
+  debugdata: HookEngineEntry;
 }
 
-export type HookKind = 'inline' | 'plt' | 'mode';
+export type HookKind = 'inline' | 'plt' | 'mode' | 'debugdata';
 
 export async function getHookConfig(): Promise<HookConfig> {
   return execJson<HookConfig>(`'${apiBinary()}' --ctl config`);

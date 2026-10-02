@@ -19,3 +19,6 @@
 [submodule "loader/src/external/plti"]
 	path = loader/src/external/plti
 	url = https://github.com/PerformanC/PLTI.git
+[submodule "loader/src/external/xz-embedded"]
+	path = loader/src/external/xz-embedded
+	url = https://github.com/tukaani-project/xz-embedded.git
