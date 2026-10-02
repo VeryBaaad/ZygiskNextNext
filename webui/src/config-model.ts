@@ -40,12 +40,14 @@ export const HOOK_ROWS: HookRow[] = [
   { kind: 'inline', field: 'inlineHook', labelKey: 'config.inlineHook' },
   { kind: 'plt', field: 'pltHook', labelKey: 'config.pltHook' },
   { kind: 'mode', field: 'mode', labelKey: 'config.mode' },
+  { kind: 'debugdata', field: 'debugdata', labelKey: 'config.debugdata' },
 ];
 
 export const UI_ROW_LABEL_KEY = 'config.uiStyle';
 
 export function hookOptionLabel(kind: HookKind, id: string): string {
   if (kind === 'mode') return t(`config.mode.${id}`);
+  if (kind === 'debugdata') return t(`config.debugdata.${id}`);
   return ENGINE_LABELS[id] ?? id;
 }
 

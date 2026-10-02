@@ -54,7 +54,10 @@ const STOP_ATTEMPTS: u32 = 80;
 /// How long `--ctl start` waits for the daemon it forked to be observable.
 const START_ATTEMPTS: u32 = 20;
 
-const USAGE: &str = "usage: injector --ctl <status|system|modules|config|config-set <inline|plt|mode> <value>|start|restart|rescan|exit>";
+const USAGE: &str = "usage: injector --ctl <status|system|modules|config|config-set <inline|plt|mode|debugdata> <value>|start|restart|rescan|exit>";
+
+const CONFIG_SET_USAGE: &str =
+    "usage: injector --ctl config-set <inline|plt|mode|debugdata> <value>";
 
 /// The command line of the injector: either a module directory to serve, or a
 /// control command answered on the spot.
@@ -76,7 +79,7 @@ pub fn command() -> ClapCommand {
                 .conflicts_with(MODULE_DIR_ARGUMENT)
                 .help(
                     "Control command: status, system, modules, config, \
-                       config-set <inline|plt|mode> <value>, start, restart, rescan or exit.",
+                       config-set <inline|plt|mode|debugdata> <value>, start, restart, rescan or exit.",
                 ),
         )
 }
@@ -263,42 +266,21 @@ fn signal_daemon(requested: i32, message: fn(Pid) -> String) -> i32 {
 
 fn config_set(arguments: &[String]) -> i32 {
     let [kind, value] = arguments else {
-        eprintln!("usage: injector --ctl config-set <inline|plt|mode> <value>");
+        eprintln!("{CONFIG_SET_USAGE}");
         return 1;
     };
 
-    let options = match kind.as_str() {
-        "inline" => config::inline_hook_options(),
-        "plt" => config::plt_hook_options(),
-        "mode" => config::tracking_mode_options(),
-        _ => {
-            eprintln!("usage: injector --ctl config-set <inline|plt|mode> <value>");
-            return 1;
-        }
+    let Some(options) = config::HookConfig::options(kind) else {
+        eprintln!("{CONFIG_SET_USAGE}");
+        return 1;
     };
     if !config::option_in(&options, value) {
         eprintln!("invalid {kind} value \"{value}\" for this device");
         return 1;
     }
 
-    let current = config::effective();
-    let updated = config::HookConfig {
-        inline_hook: if kind == "inline" {
-            value.clone()
-        } else {
-            current.inline_hook
-        },
-        plt_hook: if kind == "plt" {
-            value.clone()
-        } else {
-            current.plt_hook
-        },
-        mode: if kind == "mode" {
-            value.clone()
-        } else {
-            current.mode
-        },
-    };
+    let mut updated = config::effective();
+    updated.set(kind, value);
     if !config::write(&updated) {
         eprintln!("cannot write {}", paths::CONFIG_FILE);
         return 1;

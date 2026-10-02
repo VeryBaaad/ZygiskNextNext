@@ -19,28 +19,10 @@
 
 #pragma once
 
-#include <stdint.h>
-
 #include <string>
-#include <vector>
 
-namespace znn::module {
+namespace znn::config {
 
-struct PlanModule {
-    int fd = -1;
-    bool companion = false;
-    uint32_t index = 0;
-    std::string path;
-};
+void resolveDebugDataBackend(const std::string& name);
 
-struct Plan {
-    std::vector<PlanModule> modules;
-    std::string inline_engine;
-    std::string plt_engine;
-    std::string debugdata;
-    uint32_t nonce = 0;
-};
-
-bool parsePlan(const void* raw, Plan& out);
-
-}  //namespace znn::module
+}  //namespace znn::config

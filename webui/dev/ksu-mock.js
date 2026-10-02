@@ -32,12 +32,18 @@
     return 300 + Math.floor(Math.random() * 9000);
   };
 
-  var CONFIG_KEYS = { inline: 'inlineHook', plt: 'pltHook', mode: 'mode' };
+  var CONFIG_KEYS = {
+    inline: 'inlineHook',
+    plt: 'pltHook',
+    mode: 'mode',
+    debugdata: 'debugdata',
+  };
 
   var config = {
     inlineHook: { value: 'dobby', options: ['dobby', 'shadowhook', 'rv64hook'] },
     pltHook: { value: 'lsplt', options: ['lsplt', 'plti', 'bytehook', 'xhook'] },
     mode: { value: 'proc', options: ['auto', 'proc', 'ptrace'] },
+    debugdata: { value: 'lzma', options: ['lzma', 'xz'] },
   };
 
   var modules = [
@@ -100,7 +106,7 @@
         var key = CONFIG_KEYS[kind];
         var entry = key ? state.config[key] : null;
         if (!entry) {
-          throw new Error('usage: injector --ctl config-set <inline|plt|mode> <value>');
+          throw new Error('usage: injector --ctl config-set <inline|plt|mode|debugdata> <value>');
         }
         if (entry.options.indexOf(value) < 0) {
           throw new Error('invalid ' + kind + ' value "' + value + '" for this device');

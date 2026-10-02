@@ -592,6 +592,7 @@ impl Daemon {
             modules: tracee.modules.clone(),
             inline_engine: config.inline_hook,
             plt_engine: config.plt_hook,
+            debugdata: config.debugdata,
             nonce: tracee.nonce,
         };
         let Some(bytes) = plan.encode() else {

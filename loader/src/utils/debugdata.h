@@ -19,28 +19,26 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
-#include <string>
 #include <vector>
 
-namespace znn::module {
+namespace znn::debugdata {
 
-struct PlanModule {
-    int fd = -1;
-    bool companion = false;
-    uint32_t index = 0;
-    std::string path;
+enum class Backend {
+    kLzma,
+    kXz,
 };
 
-struct Plan {
-    std::vector<PlanModule> modules;
-    std::string inline_engine;
-    std::string plt_engine;
-    std::string debugdata;
-    uint32_t nonce = 0;
-};
+Backend backend();
 
-bool parsePlan(const void* raw, Plan& out);
+void setBackend(Backend backend);
 
-}  //namespace znn::module
+bool parseBackend(const char* name, Backend* out);
+
+const char* backendName(Backend backend);
+
+bool decompress(const uint8_t* data, size_t size, std::vector<uint8_t>& out);
+
+}  //namespace znn::debugdata

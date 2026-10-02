@@ -68,6 +68,7 @@ const EMPTY_CONFIG: HookConfig = {
   inlineHook: { value: '', options: [] },
   pltHook: { value: '', options: [] },
   mode: { value: '', options: [] },
+  debugdata: { value: '', options: [] },
 };
 </script>
 

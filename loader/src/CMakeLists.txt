@@ -10,9 +10,12 @@ if (LSPLT_STANDALONE)
     find_package(cxx REQUIRED CONFIG)
 endif ()
 
-add_library(elfutil STATIC utils/elf_util.cpp)
+add_library(elfutil STATIC
+    utils/elf_util.cpp
+    utils/debugdata.cpp
+)
 target_include_directories(elfutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(elfutil PUBLIC lzma)
+target_link_libraries(elfutil PUBLIC lzma xz_embedded)
 if (TARGET cxx::cxx)
     target_link_libraries(elfutil PUBLIC cxx::cxx)
 endif ()
@@ -20,6 +23,7 @@ endif ()
 add_library(loader SHARED
     entry.cpp
     config/hooks.cpp
+    config/debugdata.cpp
     process/self.cpp
     utils/dlext.cpp
     hook/engine.cpp

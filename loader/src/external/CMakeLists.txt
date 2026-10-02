@@ -92,6 +92,7 @@ else ()
 endif ()
 
 add_subdirectory(lzma)
+add_subdirectory(znn_xz)
 
 if (TARGET cxx::cxx)
     if (ANDROID_ABI STREQUAL "riscv64")

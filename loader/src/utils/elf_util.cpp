@@ -17,6 +17,7 @@
  * Copyright (C) 2026 VeryBaaad <verybaaad@outlook.com>
  */
 
+#include "debugdata.h"
 #include "elf_util.h"
 
 #include <android/log.h>
@@ -34,45 +35,9 @@
 #include <cstring>
 #include <unordered_set>
 
-#include "LzmaDec.h"
-
 #define ELF_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "ZNNloader", __VA_ARGS__)
 
 namespace znn {
-
-//LZMA for .gnu_debugdata
-
-static void* LzmaAlloc(ISzAllocPtr, size_t size) { return malloc(size); }
-static void LzmaFree(ISzAllocPtr, void* addr) { free(addr); }
-static const ISzAlloc g_lzma_alloc = {LzmaAlloc, LzmaFree};
-
-//[props][dict][size][data]
-static bool lzmaAloneDecompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out) {
-    if (in_size < 13) return false;
-
-    //props: lc/lp/pb + dict size
-    const Byte* props = in;
-
-    uint64_t out_size = 0;
-    for (int i = 0; i < 8; ++i) out_size |= static_cast<uint64_t>(in[5 + i]) << (8 * i);
-
-    if (out_size == 0 || out_size == UINT64_MAX) return false;
-
-    const uint8_t* data = in + 13;
-    size_t data_size = in_size - 13;
-
-    out.resize(static_cast<size_t>(out_size));
-    SizeT dest_len = static_cast<SizeT>(out_size);
-    SizeT src_len = static_cast<SizeT>(data_size);
-    ELzmaStatus status;
-
-    SRes res = LzmaDecode(out.data(), &dest_len, data, &src_len, props, 5, LZMA_FINISH_END, &status,
-                          &g_lzma_alloc);
-    if (res != SZ_OK) return false;
-
-    out.resize(dest_len);
-    return true;
-}
 
 static bool isElf(const uint8_t* p, size_t size) {
     return size >= SELFMAG + 1 && p[EI_MAG0] == ELFMAG0 && p[EI_MAG1] == ELFMAG1 &&
@@ -182,9 +147,9 @@ void ElfImage::parseSymbols(const ElfW(Shdr)* str_sh, const char* strtab,
 
 bool ElfImage::parseGnuDebugData(const uint8_t* data, size_t size) const {
     for (size_t off : {static_cast<size_t>(4), static_cast<size_t>(0)}) {
-        if (size <= off + 13) continue;
+        if (size <= off) continue;
         std::vector<uint8_t> out;
-        if (!lzmaAloneDecompress(data + off, size - off, out)) continue;
+        if (!debugdata::decompress(data + off, size - off, out)) continue;
         if (!isElf(out.data(), out.size())) continue;
 
         debugdata_ = std::move(out);
