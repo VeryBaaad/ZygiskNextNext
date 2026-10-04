@@ -28,6 +28,8 @@ val moduleName = "Zygisk Next Next"
 val verName = "v1.4.0"
 val verCode = gitCommitCount
 val commitHash = gitCommitHash
+val updateUrl = "https://raw.githubusercontent.com/VeryBaaad/ZygiskNextNext/refs/heads/update/update.json"
+
 val minKsuVersion = 10940
 val minKsudVersion = 11425
 val minMagiskVersion = 26402
@@ -38,6 +40,8 @@ extra.set("moduleName", moduleName)
 extra.set("verName", verName)
 extra.set("verCode", verCode)
 extra.set("commitHash", commitHash)
+extra.set("updateUrl", updateUrl)
+
 extra.set("minKsuVersion", minKsuVersion)
 extra.set("minKsudVersion", minKsudVersion)
 extra.set("minMagiskVersion", minMagiskVersion)

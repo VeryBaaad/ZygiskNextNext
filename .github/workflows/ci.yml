@@ -103,12 +103,20 @@ jobs:
             curl -v "$URL" -F Release="@$Release" -F Debug="@$Debug"
           fi
 
+      - name: Generate changelog
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${{ github.ref_name }}" --jq .body > "${{ runner.temp }}/changelog.md"
+          cat "${{ runner.temp }}/changelog.md"
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         if: github.ref_type == 'tag'
         with:
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/changelog.md
           working_directory: module/build/outputs/release
           files: ${{ steps.prepareArtifact.outputs.releaseName }}.zip
           make_latest: true
@@ -127,3 +135,39 @@ jobs:
           name: ${{ steps.prepareArtifact.outputs.debugName }}
           path: "./znn-debug/*"
 
+      - name: Sync update branch
+        if: github.ref_type == 'tag'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          versionCode=`git rev-list HEAD --count`
+          releaseName="${{ steps.prepareArtifact.outputs.releaseName }}"
+          zipUrl="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$releaseName.zip"
+          changelogUrl="https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/update/changelog.md"
+
+          mkdir -p "${{ runner.temp }}/update-channel"
+          cp "${{ runner.temp }}/changelog.md" "${{ runner.temp }}/update-channel/changelog.md"
+          cat > "${{ runner.temp }}/update-channel/update.json" <<EOF
+          {
+              "version": "${{ github.ref_name }}",
+              "versionCode": $versionCode,
+              "zipUrl": "$zipUrl",
+              "changelog": "$changelogUrl"
+          }
+          EOF
+
+          jsonBlob=`git hash-object -w "${{ runner.temp }}/update-channel/update.json"`
+          changelogBlob=`git hash-object -w "${{ runner.temp }}/update-channel/changelog.md"`
+          tree=`printf '100644 blob %s\tupdate.json\n100644 blob %s\tchangelog.md\n' "$jsonBlob" "$changelogBlob" | git mktree`
+
+          parent=`git rev-parse --verify --quiet refs/remotes/origin/update || true`
+          if [ -n "$parent" ]; then
+            commit=`git commit-tree "$tree" -p "$parent" -m "docs: release ${{ github.ref_name }}"`
+          else
+            commit=`git commit-tree "$tree" -m "docs: release ${{ github.ref_name }}"`
+          fi
+          git push origin "$commit:refs/heads/update"
