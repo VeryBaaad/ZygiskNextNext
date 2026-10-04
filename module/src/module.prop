@@ -4,3 +4,4 @@ version=${versionName}
 versionCode=${versionCode}
 author=VeryBaaad
 description=Standalone Zygisk Next module loader.
+updateJson=${updateUrl}

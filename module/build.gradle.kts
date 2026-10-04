@@ -29,6 +29,7 @@ val minKsudVersion: Int = rootProject.extra["minKsudVersion"] as Int
 val minMagiskVersion: Int = rootProject.extra["minMagiskVersion"] as Int
 val minApatchVersion: Int = rootProject.extra["minApatchVersion"] as Int
 val commitHash: String = rootProject.extra["commitHash"] as String
+val updateUrl: String = rootProject.extra["updateUrl"] as String
 
 android {
     androidResources {
@@ -69,7 +70,8 @@ androidComponents.onVariants { variant ->
                 "moduleId" to moduleId,
                 "moduleName" to moduleName,
                 "versionName" to "$verName ($verCode-$commitHash-$variantLowered)",
-                "versionCode" to verCode
+                "versionCode" to verCode,
+                "updateUrl" to updateUrl
             )
         }
         from("$projectDir/src") {
