@@ -14,7 +14,6 @@
     "noEmit": true,
     "jsx": "preserve",
     "types": ["vite/client", "node"],
-    "baseUrl": ".",
     "paths": {
       "miuix-vue": ["./node_modules/miuix-vue/dist/src/index.d.ts"],
       "miuix-vue/icons": ["./node_modules/miuix-vue/dist/src/icons/extended/index.d.ts"]

@@ -45,7 +45,7 @@ export default defineConfig(() => ({
     open: true,
   },
   build: {
-    outDir: resolve(__dirname, '../module/webroot'),
+    outDir: resolve(import.meta.dirname, '../module/webroot'),
     emptyOutDir: true,
     target: 'es2020',
     sourcemap: false,
