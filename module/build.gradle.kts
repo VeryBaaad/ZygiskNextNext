@@ -1,20 +1,8 @@
 import android.databinding.tool.ext.capitalizeUS
 import java.security.MessageDigest
-import org.apache.tools.ant.filters.ReplaceTokens
-
-import org.apache.tools.ant.filters.FixCrLfFilter
-
 import org.apache.commons.codec.binary.Hex
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.security.KeyFactory
-import java.security.KeyPairGenerator
-import java.security.Signature
-import java.security.interfaces.EdECPrivateKey
-import java.security.interfaces.EdECPublicKey
-import java.security.spec.EdECPrivateKeySpec
-import java.security.spec.NamedParameterSpec
-import java.util.TreeSet
+import org.apache.tools.ant.filters.FixCrLfFilter
+import org.apache.tools.ant.filters.ReplaceTokens
 
 plugins {
     alias(libs.plugins.agp.lib)
@@ -40,6 +28,47 @@ android {
     }
 }
 
+val xzMinEntrySize = 1024L
+
+fun runProcess(command: List<String>, workingDirectory: File? = null): Pair<Int, String> {
+    val process = ProcessBuilder(command)
+        .apply { if (workingDirectory != null) directory(workingDirectory) }
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }
+    return process.waitFor() to output
+}
+
+fun resolveSevenZip(probeRoot: File): String {
+    val candidates = listOfNotNull(
+        findProperty("sevenZip.path") as? String,
+        "7zz",
+        "7z",
+        "7za",
+    )
+    val probeDir = File(probeRoot, "probe").apply { deleteRecursively(); mkdirs() }
+    File(probeDir, "probe.txt").writeText("z".repeat(4096))
+    try {
+        for (candidate in candidates) {
+            File(probeDir, "probe.zip").delete()
+            try {
+                val add = runProcess(
+                    listOf(candidate, "a", "-tzip", "-mm=XZ", "probe.zip", "probe.txt"), probeDir
+                )
+                if (add.first != 0) continue
+                val listing = runProcess(listOf(candidate, "l", "-slt", "probe.zip"), probeDir)
+                if (listing.first == 0 && "Method = xz" in listing.second) return candidate
+            } catch (_: Exception) {
+            }
+        }
+    } finally {
+        probeDir.deleteRecursively()
+    }
+    throw GradleException(
+        "No 7-Zip found"
+    )
+}
+
 androidComponents.onVariants { variant ->
     val variantLowered = variant.name.lowercase()
     val variantCapped = variant.name.capitalizeUS()
@@ -58,7 +87,7 @@ androidComponents.onVariants { variant ->
         into(moduleDir)
         from("${rootProject.projectDir}/README.md")
         from("$projectDir/src") {
-            exclude("module.prop", "customize.sh", "post-fs-data.sh", "service.sh")
+            exclude("module.prop", "customize.sh", "post-fs-data.sh")
             filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
         }
         from(rootProject.file("module/webroot")) {
@@ -75,7 +104,7 @@ androidComponents.onVariants { variant ->
             )
         }
         from("$projectDir/src") {
-            include("customize.sh", "post-fs-data.sh", "service.sh")
+            include("customize.sh", "post-fs-data.sh")
             val tokens = mapOf(
                 "DEBUG" to if (buildTypeLowered == "debug") "true" else "false",
                 "MIN_KSU_VERSION" to "$minKsuVersion",
@@ -141,12 +170,51 @@ androidComponents.onVariants { variant ->
         }
     }
 
-    val zipTask = tasks.register<Zip>("zip$variantCapped") {
+    val releaseDir = layout.buildDirectory.dir("outputs/release").get().asFile
+    val archiveFile = File(releaseDir, zipFileName)
+
+    val zipTask = tasks.register("zip$variantCapped") {
         group = "module"
+        description = "Packs the $variantLowered module into $zipFileName with XZ-compressed entries."
         dependsOn(prepareModuleFilesTask)
-        archiveFileName.set(zipFileName)
-        destinationDirectory.set(layout.buildDirectory.file("outputs/release").get().asFile)
-        from(moduleDir)
+        inputs.dir(moduleDir)
+        outputs.file(archiveFile)
+
+        doLast {
+            val sevenZip = resolveSevenZip(layout.buildDirectory.dir("sevenzip").get().asFile)
+            val root = moduleDir.get().asFile
+
+            releaseDir.mkdirs()
+            archiveFile.delete()
+
+            val entries = fileTree(root).files
+                .filter { it.isFile }
+                .map { it.relativeTo(root).invariantSeparatorsPath }
+                .sorted()
+            val (deflated, xz) = entries.partition { File(root, it).length() < xzMinEntrySize }
+
+            fun append(method: String, members: List<String>) {
+                if (members.isEmpty()) return
+                val (status, output) = runProcess(
+                    listOf(
+                        sevenZip, "a", "-tzip", "-mx=9", "-mm=$method", "-bso0", "-bsp0",
+                        archiveFile.absolutePath,
+                    ) + members,
+                    root,
+                )
+                if (status != 0) {
+                    throw GradleException("7-Zip failed: $method ($status):\n$output")
+                }
+            }
+
+            append("Deflate", deflated)
+            append("XZ", xz)
+
+            logger.lifecycle(
+                "$zipFileName: ${archiveFile.length()} bytes " +
+                    "(${xz.size} xz + ${deflated.size} deflate entries)"
+            )
+        }
     }
 
     val pushTask = tasks.register<Exec>("push$variantCapped") {
