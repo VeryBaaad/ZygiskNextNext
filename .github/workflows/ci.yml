@@ -83,8 +83,8 @@ jobs:
         run: |
           releaseName=`ls module/build/outputs/release/Zygisk-Next-Next-v*-release.zip | awk -F '(/|.zip)' '{print $5}'` && echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
           debugName=`ls module/build/outputs/release/Zygisk-Next-Next-v*-debug.zip | awk -F '(/|.zip)' '{print $5}'` && echo "debugName=$debugName" >> $GITHUB_OUTPUT
-          unzip module/build/outputs/release/Zygisk-Next-Next-v*-release.zip -d znn-release
-          unzip module/build/outputs/release/Zygisk-Next-Next-v*-debug.zip -d znn-debug
+          7z x -y -oznn-release module/build/outputs/release/Zygisk-Next-Next-v*-release.zip
+          7z x -y -oznn-debug module/build/outputs/release/Zygisk-Next-Next-v*-debug.zip
 
       - name: Post to channel
         if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && github.ref_type != 'tag' }}
@@ -128,12 +128,14 @@ jobs:
         with:
           name: ${{ steps.prepareArtifact.outputs.releaseName }}
           path: "./znn-release/*"
+          compression-level: 9
 
       - name: Upload debug
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepareArtifact.outputs.debugName }}
           path: "./znn-debug/*"
+          compression-level: 9
 
       - name: Sync update branch
         if: github.ref_type == 'tag'
