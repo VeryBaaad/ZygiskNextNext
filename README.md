@@ -12,6 +12,7 @@ A Magisk module that attempts to implement the ZygiskNext API.
 
 - Android 5.0 - 17 QPR3 Beta1
 - Linux 3.17 or newer
+- GrapheneOS
 
 ## Install
 
