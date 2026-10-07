@@ -58,6 +58,7 @@ export const en: Record<string, string> = {
   'config.pltHook': 'PLT Hook implementation',
   'config.mode': 'Tracking Mode',
   'config.mode.auto': 'Auto',
+  'config.mode.kernel': 'kernel events',
   'config.mode.ptrace': 'ptrace mode',
   'config.mode.proc': 'proc mode',
   'config.debugdata': 'gnu_debugdata decompressor',

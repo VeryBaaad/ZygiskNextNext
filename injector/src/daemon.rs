@@ -45,6 +45,7 @@ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tracking {
+    Kernel,
     Ptrace,
     Proc,
 }
@@ -52,6 +53,7 @@ pub enum Tracking {
 impl Tracking {
     pub fn as_str(self) -> &'static str {
         match self {
+            Tracking::Kernel => "kernel",
             Tracking::Ptrace => "ptrace",
             Tracking::Proc => "proc",
         }
@@ -67,6 +69,7 @@ pub struct Daemon {
     pub loader32: PathBuf,
     pub module_dir: PathBuf,
     pub state: StateWriter,
+    pub kernel: Option<crate::kernel::KernelTracker>,
     pub mode: Tracking,
     pub requested_mode: String,
     pub tracees: HashMap<Pid, Tracee>,
@@ -86,16 +89,19 @@ impl Daemon {
         // stalls during startup must not do so silently.
         logi!("Zygisk Next Next {VERSION} starting");
 
+        let requested_mode = config::effective().mode;
+
         let mut daemon = Self {
             targets: Vec::new(),
             modules: BTreeMap::new(),
-            system: system::collect(),
+            system: SystemInfo::default(),
             loader64: module_dir.join("lib64").join("libloader.so"),
             loader32: module_dir.join("lib").join("libloader.so"),
             module_dir,
             state: StateWriter::default(),
+            kernel: None,
             mode: Tracking::Ptrace,
-            requested_mode: config::MODE_AUTO.to_owned(),
+            requested_mode: requested_mode.clone(),
             tracees: HashMap::new(),
             done: HashSet::new(),
             ignored: HashSet::new(),
@@ -107,6 +113,13 @@ impl Daemon {
             last_state_write_ms: 0,
         };
 
+        let kernel_early = requested_mode == config::MODE_KERNEL
+            || (requested_mode == config::MODE_AUTO && crate::mode::monitor_present());
+        if kernel_early {
+            daemon.start_kernel_tracker();
+        }
+
+        daemon.system = system::collect();
         daemon.check_loaders();
         signal::set_handler(signal::SIGHUP, on_sighup);
         //`--ctl exit` and `--ctl restart` end us with SIGTERM, and a tracee that
@@ -140,6 +153,7 @@ impl Daemon {
             }
 
             match self.mode {
+                Tracking::Kernel => self.poll_kernel(),
                 Tracking::Proc => self.poll_processes(),
                 Tracking::Ptrace => {
                     let now = procfs::now_ms();
@@ -169,6 +183,10 @@ impl Daemon {
                 self.collect_targets();
                 self.last_rescan_ms = Some(now);
                 self.state.dirty = true;
+                if self.mode == Tracking::Kernel {
+                    self.prune_kernel_bookkeeping();
+                    self.upgrade_kernel_sources();
+                }
             }
             if self.state.dirty
                 && (now - self.last_state_write_ms >= 2000 || self.last_state_write_ms == 0)
@@ -180,7 +198,7 @@ impl Daemon {
 
             thread::sleep(match self.mode {
                 Tracking::Proc => Duration::from_millis(2),
-                Tracking::Ptrace => Duration::from_millis(1),
+                Tracking::Kernel | Tracking::Ptrace => Duration::from_millis(1),
             });
         }
 

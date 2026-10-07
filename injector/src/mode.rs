@@ -62,23 +62,41 @@ impl Daemon {
         if self.requested_mode == config::MODE_PROC {
             logi!("tracking mode forced to proc (poll /proc); init is never traced");
             self.mode = Tracking::Proc;
-        } else if self.requested_mode == config::MODE_PTRACE {
+            return;
+        }
+        if self.requested_mode == config::MODE_PTRACE {
             logi!("tracking mode forced to ptrace (trace init)");
             self.mode = if self.seize_init() {
                 Tracking::Ptrace
             } else {
                 Tracking::Proc
             };
-        } else if monitor_present() {
-            logi!("another Zygisk-family loader is running; using proc mode (poll /proc)");
-            self.mode = Tracking::Proc;
-        } else {
-            self.mode = if self.seize_init() {
-                Tracking::Ptrace
-            } else {
-                Tracking::Proc
-            };
+            return;
         }
+
+        if self.requested_mode == config::MODE_KERNEL {
+            if self.start_kernel_tracker() {
+                self.mode = Tracking::Kernel;
+                return;
+            }
+            logw!("kernel tracking is unavailable on this kernel; using proc (poll /proc)");
+            self.mode = Tracking::Proc;
+            return;
+        }
+
+        if !monitor_present() && self.seize_init() {
+            self.stop_kernel_tracker();
+            self.mode = Tracking::Ptrace;
+            return;
+        }
+        if self.start_kernel_tracker() {
+            self.mode = Tracking::Kernel;
+            return;
+        }
+        if monitor_present() {
+            logi!("another Zygisk-family loader is running; using proc mode (poll /proc)");
+        }
+        self.mode = Tracking::Proc;
     }
 
     pub fn apply_requested_mode(&mut self) {
@@ -87,6 +105,33 @@ impl Daemon {
             return;
         }
         self.requested_mode = wanted.clone();
+
+        if wanted == config::MODE_KERNEL || wanted == config::MODE_AUTO {
+            if self.mode == Tracking::Kernel {
+                return;
+            }
+            if self.mode == Tracking::Ptrace && !self.hand_over_init() {
+                logw!("tracking mode kernel needs init to be handed over; staying in ptrace mode");
+                return;
+            }
+            if self.start_kernel_tracker() {
+                self.mode = Tracking::Kernel;
+                self.state.dirty = true;
+                logw!("tracking mode changed to {wanted}; detached init and left /proc polling");
+                return;
+            }
+            logw!("kernel tracking is unavailable on this kernel; falling back");
+        }
+
+        if self.mode == Tracking::Kernel {
+            self.stop_kernel_tracker();
+            self.mode = Tracking::Proc;
+            self.state.dirty = true;
+            logw!(
+                "tracking mode changed to {wanted}; stopped the kernel event sources and switched to polling /proc (ptrace needs a restart)"
+            );
+            return;
+        }
 
         if wanted == config::MODE_PROC && self.mode == Tracking::Ptrace {
             if !self.hand_over_init() {
@@ -295,7 +340,7 @@ impl Daemon {
         self.candidates.remove(&pid);
     }
 
-    fn observe_target(&mut self, pid: Pid, exe: &str) {
+    pub(crate) fn observe_target(&mut self, pid: Pid, exe: &str) {
         match self.seize_target(pid, exe) {
             Seizure::Retry => {}
             Seizure::Seized | Seizure::GiveUp => {
@@ -406,6 +451,7 @@ impl Daemon {
         let pc = regs.pc();
         if procfs::pc_in_exe_text(pid, exe, pc) {
             logw!("{exe} (pid {pid}) is already past its entry (pc {pc:#x}); instance missed");
+            self.record_failure(pid, exe, "injection window missed (already past its entry)");
             ptrace::detach(pid, None);
             return Seizure::GiveUp;
         }
@@ -421,6 +467,7 @@ impl Daemon {
         tracee.deadline_ms = procfs::now_ms() + 3000;
         if !set_entry_breakpoint(pid, &mut tracee, thumb) {
             logw!("{exe} (pid {pid}): cannot arm the entry breakpoint; skipping");
+            self.record_failure(pid, exe, "could not arm the entry breakpoint");
             ptrace::detach(pid, None);
             return Seizure::GiveUp;
         }
