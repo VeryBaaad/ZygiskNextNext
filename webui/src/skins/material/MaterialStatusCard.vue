@@ -28,6 +28,7 @@ const props = defineProps<{ status: InjectorStatus }>();
 
 const mode = computed(() => {
   if (!props.status.running) return '';
+  if (props.status.mode === 'kernel') return t('config.mode.kernel');
   if (props.status.mode === 'proc') return t('config.mode.proc');
   if (props.status.mode === 'ptrace') return t('config.mode.ptrace');
   return '';

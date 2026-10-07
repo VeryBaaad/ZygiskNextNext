@@ -25,6 +25,8 @@ use crate::paths;
 use crate::system::runtime_abi;
 
 pub const MODE_AUTO: &str = "auto";
+/// Follow kernel fork/exec/exit events.
+pub const MODE_KERNEL: &str = "kernel";
 /// Trace init and follow every fork.
 pub const MODE_PTRACE: &str = "ptrace";
 /// Poll `/proc` and never trace init.
@@ -74,7 +76,7 @@ pub fn plt_hook_options() -> Vec<&'static str> {
 }
 
 pub fn tracking_mode_options() -> Vec<&'static str> {
-    vec![MODE_AUTO, MODE_PTRACE, MODE_PROC]
+    vec![MODE_AUTO, MODE_KERNEL, MODE_PTRACE, MODE_PROC]
 }
 
 pub fn debugdata_options() -> Vec<&'static str> {

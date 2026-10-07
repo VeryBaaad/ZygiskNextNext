@@ -60,6 +60,7 @@ export const zhCN: Dictionary = {
   'config.pltHook': 'PLT Hook 实现',
   'config.mode': '跟踪模式',
   'config.mode.auto': '自动',
+  'config.mode.kernel': 'kernel events',
   'config.mode.ptrace': 'ptrace mode',
   'config.mode.proc': 'proc mode',
   'config.debugdata': 'gnu_debugdata 解压后端',

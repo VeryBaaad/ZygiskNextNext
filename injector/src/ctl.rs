@@ -296,7 +296,11 @@ fn config_set(arguments: &[String]) -> i32 {
 fn status(snapshot: Option<&StateSnapshot>) -> i32 {
     let recorded_mode = snapshot
         .and_then(|state| state.mode.as_deref())
-        .filter(|mode| *mode == config::MODE_PTRACE || *mode == config::MODE_PROC);
+        .filter(|mode| {
+            *mode == config::MODE_KERNEL
+                || *mode == config::MODE_PTRACE
+                || *mode == config::MODE_PROC
+        });
     let pid = daemon_pid().unwrap_or(0);
     let running = pid > 0;
     let mode = match recorded_mode {

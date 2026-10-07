@@ -50,6 +50,7 @@ const abiText = computed(() => {
 
 const modeText = computed(() => {
   const mode = props.status?.mode;
+  if (mode === 'kernel') return t('config.mode.kernel');
   if (mode === 'proc') return t('config.mode.proc');
   if (mode === 'ptrace') return t('config.mode.ptrace');
   return t('info.unknown');
